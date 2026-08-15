@@ -243,22 +243,7 @@ label:focus-within {
 .sample-item span { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .sample-item b { color: var(--accent); font-size: 14px; font-weight: 500; }
 
-.assembly-section { padding-bottom: 16px; }
-.assembly-status {
-  display: grid;
-  gap: 4px;
-  margin-bottom: 12px;
-  padding: 11px 12px;
-  border: 1px solid var(--line);
-  border-left: 2px solid var(--line-strong);
-  background: var(--surface-subtle);
-}
-
-.assembly-status strong { font-size: 11px; font-weight: 600; }
-.assembly-status span { color: var(--muted); font-size: 10px; line-height: 1.45; }
-.assembly-status[data-state="loading"] { border-left-color: var(--accent); }
-.assembly-status[data-state="verified"] { border-left-color: var(--accent); background: var(--accent-soft); }
-.assembly-status[data-state="manual"] { border-left-color: var(--line-strong); }
+.parts-section { padding-bottom: 16px; }
 .parts-list { display: grid; }
 
 .empty-parts {
@@ -379,6 +364,59 @@ kbd {
 .segmented button:last-child { border-right: 0; }
 .segmented button:hover { background: var(--surface-subtle); color: var(--ink); }
 .segmented button.active { background: var(--ink); color: var(--surface); }
+.segmented button:disabled { opacity: 0.35; cursor: default; }
+
+.physics-section { padding-bottom: 20px; }
+.physics-copy {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+.physics-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+}
+.physics-actions button {
+  min-height: 36px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+}
+.physics-actions button:hover:not(:disabled) { background: var(--surface-subtle); color: var(--ink); }
+.physics-actions button.active {
+  background: color-mix(in srgb, #2aaa63 13%, var(--surface));
+  color: #21864e;
+  box-shadow: inset 3px 0 0 #2aaa63;
+}
+.physics-actions button:disabled { opacity: 0.35; cursor: default; }
+.physics-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 9px;
+}
+.physics-status i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+.physics-status[data-state="loading"] i { background: #d99b26; }
+.physics-status[data-state="running"] i { background: #2aaa63; box-shadow: 0 0 0 3px color-mix(in srgb, #2aaa63 16%, transparent); }
+.physics-status[data-state="paused"] i { background: #d99b26; }
+
+.app-shell[data-mode="gcode"] .model-only { display: none !important; }
 
 .viewer-panel {
   display: grid;
@@ -408,42 +446,6 @@ kbd {
 .viewport-tools.visible { display: flex; }
 .viewport-tools.inactive { opacity: 1; }
 
-.assembly-tool-group {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: stretch;
-  border-right: 1px solid var(--line);
-}
-
-.assembly-tool-group button {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 100px;
-  padding: 0 13px;
-  border: 0;
-  border-right: 1px solid var(--line);
-  background: var(--ink);
-  color: var(--surface);
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.assembly-tool-group button:last-child {
-  min-width: 76px;
-  border-right: 0;
-  background: var(--surface);
-  color: var(--ink);
-  font-weight: 500;
-}
-
-.assembly-tool-group button:hover:not(:disabled) { background: var(--accent); color: #ffffff; }
-.assembly-tool-group button:disabled { opacity: 0.35; cursor: default; }
-.assembly-tool-group button b { color: var(--accent); font-size: 16px; font-weight: 500; }
-.assembly-tool-group button:hover b { color: inherit; }
-
 .viewport-tool-empty {
   display: none;
   align-items: center;
@@ -454,6 +456,17 @@ kbd {
 }
 
 .viewport-tool-empty.visible { display: flex; }
+.viewport-tool-guide {
+  display: flex;
+  min-width: 286px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  border-right: 1px solid var(--line);
+  white-space: nowrap;
+}
+.viewport-tool-guide strong { color: var(--ink); font-size: 11px; font-weight: 650; }
+.viewport-tool-guide span { color: var(--muted); font-size: 10px; }
 .viewport-tool-group { display: flex; align-items: stretch; border-right: 1px solid var(--line); }
 
 .viewport-tool-group button {
@@ -482,8 +495,7 @@ kbd {
 .viewport-tool-group button.danger:hover:not(:disabled) { color: var(--danger); }
 
 .toolbar-actions { display: flex; flex: 0 0 auto; align-items: stretch; margin-left: auto; }
-.tool-button,
-.physics-button {
+.tool-button {
   min-width: 58px;
   height: 100%;
   padding: 0 12px;
@@ -495,14 +507,9 @@ kbd {
   font-size: 11px;
 }
 
-.tool-button:hover,
-.physics-button:hover { background: var(--surface-subtle); color: var(--ink); }
-.tool-button.active,
-.physics-button.active { color: var(--accent); }
-.tool-button:disabled,
-.physics-button:disabled { opacity: 0.35; cursor: default; }
-.physics-button { min-width: 82px; color: var(--ink); font-weight: 500; }
-.physics-button.busy { color: var(--accent); }
+.tool-button:hover { background: var(--surface-subtle); color: var(--ink); }
+.tool-button.active { color: var(--accent); }
+.tool-button:disabled { opacity: 0.35; cursor: default; }
 
 .viewport {
   position: relative;
@@ -511,13 +518,78 @@ kbd {
   background: var(--viewport);
 }
 
-.viewport.transform-dragging .canvas-host canvas { cursor: grabbing; }
+.viewport.gizmo-dragging .canvas-host canvas,
+.viewport.direct-dragging .canvas-host canvas { cursor: grabbing; }
 .canvas-host,
 .gcode-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .canvas-host.hidden { visibility: hidden; pointer-events: none; }
 .canvas-host canvas { display: block; width: 100% !important; height: 100% !important; }
 .gcode-canvas { display: none; }
 .gcode-canvas.visible { display: block; }
+.combined-gizmo {
+  position: absolute;
+  z-index: 7;
+  inset: 0;
+  display: block;
+  visibility: hidden;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.combined-gizmo.visible { visibility: visible; }
+
+.empty-workspace {
+  position: absolute;
+  z-index: 3;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  visibility: hidden;
+  gap: 8px;
+  width: min(360px, calc(100% - 48px));
+  padding: 28px;
+  border: 1px dashed var(--line-strong);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  text-align: center;
+  opacity: 0;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.empty-workspace.visible { visibility: visible; opacity: 1; }
+.empty-workspace strong { font-size: 16px; font-weight: 600; }
+.empty-workspace span { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.empty-upload {
+  justify-self: center;
+  margin-top: 5px;
+  padding: 9px 16px;
+  background: var(--ink);
+  color: var(--surface);
+  cursor: pointer;
+  pointer-events: auto;
+  font-size: 11px;
+  font-weight: 600;
+}
+.empty-upload:hover { background: var(--accent); color: #ffffff; }
+
+.transform-readout {
+  position: absolute;
+  z-index: 11;
+  visibility: hidden;
+  min-width: 126px;
+  padding: 7px 9px;
+  border: 1px solid var(--accent);
+  background: var(--surface);
+  color: var(--ink);
+  opacity: 0;
+  pointer-events: none;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.transform-readout.visible { visibility: visible; opacity: 1; }
 
 .selection-chip {
   position: absolute;
@@ -767,7 +839,7 @@ kbd {
   .workspace { grid-template-columns: 270px minmax(0, 1fr); }
   .privacy-note { padding: 0 16px; font-size: 11px; }
   .panel-section { padding-right: 18px; padding-left: 18px; }
-  .viewport-tool-group.compact:nth-of-type(3) { display: none; }
+  .viewport-tool-group.compact:last-child { display: none; }
 }
 
 @media (max-width: 860px) {
@@ -778,25 +850,32 @@ kbd {
   .metrics div:nth-child(5) { display: none; }
   .metrics { grid-template-columns: repeat(3, 1fr); }
   .viewport-tool-group.compact { display: none; }
+  .viewport-tool-guide { min-width: 0; padding: 0 12px; }
+  .viewport-tool-guide span { display: none; }
   .selection-chip { top: auto; bottom: 18px; }
   .tool-button { min-width: 48px; padding: 0 8px; }
 }
 
 @media (max-width: 680px) {
   body { overflow: auto; }
-  .app-shell { min-height: 880px; }
+  .app-shell { height: auto; min-height: 100%; }
   .app-header { grid-template-columns: 1fr auto; }
   .brand { border-right: 0; padding: 0 16px; }
   .brand strong { font-size: 20px; }
   .header-mode-switch { padding: 0 16px; }
-  .workspace { grid-template-columns: 1fr; grid-template-rows: 300px minmax(520px, 1fr); }
-  .control-panel { display: grid; grid-template-columns: 1fr 1fr; border-right: 0; border-bottom: 1px solid var(--line); }
+  .workspace { display: flex; flex-direction: column; }
+  .control-panel { display: grid; order: 2; overflow: visible; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); border-right: 0; }
   .control-panel .panel-section { min-width: 0; }
-  .transform-section { overflow-y: auto; grid-row: span 3; }
-  .material-section { border-bottom: 0; }
-  .viewer-panel { min-height: 520px; grid-template-rows: 54px minmax(360px, 1fr) 82px; }
+  .parts-section,
+  .transform-section,
+  .material-section,
+  .physics-section { grid-column: 1 / -1; }
+  .transform-section { overflow: visible; }
+  .physics-section { border-bottom: 0; }
+  .viewer-panel { order: 1; height: calc(100svh - 60px); min-height: 560px; grid-template-rows: 54px minmax(360px, 1fr) 82px; }
   .viewport-tool-group button { min-width: 62px; padding: 0 9px; }
   .viewport-tool-group button kbd { display: none; }
+  .viewport-tool-guide { min-width: auto; }
   .toolbar-actions .tool-button { display: none; }
   .viewport-hint { display: none; }
   .inspector-bar { grid-template-columns: minmax(210px, 1fr) 1fr; }
@@ -804,6 +883,7 @@ kbd {
   .metrics { grid-template-columns: 1fr; }
   .file-identity { padding-left: 14px; }
   .file-identity strong { max-width: 120px; }
+  .selection-chip { top: 14px; bottom: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {
