@@ -1,0 +1,15 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+.pio/
+.playwright-cli/
+.venv/
+.vscode/
+firmware/include/secrets.h
+node_modules/
+output/promo/
+output/wiring/source-png/
+output/wiring/*-crop.png
+viewer/dist/
+*.tsbuildinfo

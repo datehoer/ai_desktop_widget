@@ -1,0 +1,12 @@
+[project]
+name = "codex-usage-widget-tooling"
+version = "0.1.0"
+description = "Pinned local tooling for building the ESP32 firmware"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "platformio==6.1.19",
+]
+
+[tool.uv]
+package = false
+

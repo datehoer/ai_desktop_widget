@@ -1,0 +1,20 @@
+{
+  "name": "codex-usage-widget",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node bridge/src/server.js",
+    "test": "node --test bridge/test/*.test.js",
+    "viewer:install": "npm --prefix viewer install",
+    "viewer:dev": "npm --prefix viewer run dev",
+    "viewer:build": "npm --prefix viewer run build",
+    "viewer:preview": "npm --prefix viewer run preview",
+    "service:install": "bash scripts/install-macos-service.sh",
+    "service:status": "bash scripts/status-macos-service.sh",
+    "service:uninstall": "bash scripts/uninstall-macos-service.sh"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
