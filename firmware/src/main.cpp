@@ -17,8 +17,40 @@ constexpr uint16_t kMuted = 0x8C71;
 constexpr uint16_t kGreen = 0x3F67;
 constexpr uint16_t kAmber = 0xFD20;
 constexpr uint16_t kRed = 0xF986;
+constexpr uint16_t kGraffitiBackground = 0x0841;
+constexpr uint16_t kGraffitiPanel = 0x10A2;
+constexpr uint16_t kGraffitiPanelEdge = 0x4208;
+constexpr uint16_t kGraffitiTexture = 0x2104;
+constexpr uint16_t kGraffitiOutline = 0xD69A;
+constexpr uint16_t kGraffitiPink = 0xF9B0;
+constexpr uint16_t kGraffitiGreen = 0xA7E0;
+constexpr uint16_t kGraffitiFold = 0x2945;
 constexpr unsigned long kWifiConnectTimeoutMs = 15000;
 constexpr time_t kMinimumValidEpoch = 1609459200;  // 2021-01-01 UTC
+constexpr int kIdleCardX[] = {4, 61, 124, 181};
+constexpr int kIdleCardY = 9;
+constexpr int kIdleCardWidth = 55;
+constexpr int kIdleCardHeight = 191;
+
+constexpr uint8_t kDigitSegments[] = {
+    0b0111111,  // 0: A B C D E F
+    0b0000110,  // 1: B C
+    0b1011011,  // 2: A B D E G
+    0b1001111,  // 3: A B C D G
+    0b1100110,  // 4: B C F G
+    0b1101101,  // 5: A C D F G
+    0b1111101,  // 6: A C D E F G
+    0b0000111,  // 7: A B C
+    0b1111111,  // 8: A B C D E F G
+    0b1101111,  // 9: A B C D F G
+};
+
+enum class DisplayMode {
+  kUnknown,
+  kStatus,
+  kIdleClock,
+  kOffline,
+};
 
 TFT_eSPI tft;
 U8g2_for_TFT_eSPI utf8Font;
@@ -30,6 +62,10 @@ unsigned long configButtonPressedAt = 0;
 bool hasRenderedStatus = false;
 bool bridgeHealthy = false;
 int64_t weeklyResetsAt = 0;
+DisplayMode displayMode = DisplayMode::kUnknown;
+int lastIdleHour = -1;
+int lastIdleMinute = -1;
+bool idleClockSceneDrawn = false;
 
 uint16_t quotaColor(float usedPercent) {
   if (usedPercent >= 90) return kRed;
@@ -91,6 +127,204 @@ String clockText() {
   return String(buffer);
 }
 
+bool localClock(int &hour, int &minute) {
+  struct tm localTime;
+  if (!getLocalTime(&localTime, 10)) return false;
+  hour = localTime.tm_hour;
+  minute = localTime.tm_min;
+  return true;
+}
+
+int clockDigit(int hour, int minute, int index) {
+  if (hour < 0 || minute < 0) return -1;
+  if (index == 0) return hour / 10;
+  if (index == 1) return hour % 10;
+  if (index == 2) return minute / 10;
+  return minute % 10;
+}
+
+uint16_t digitColor(int index) {
+  return index == 0 || index == 3 ? kGraffitiPink : kGraffitiGreen;
+}
+
+void drawPaintSegment(int x, int y, int width, int height, uint16_t color) {
+  const int radius = min(5, min(width, height) / 2);
+  tft.fillRoundRect(x - 2, y - 2, width + 4, height + 4, radius + 1,
+                    kGraffitiOutline);
+  tft.fillRoundRect(x, y, width, height, radius, color);
+}
+
+void drawGraffitiDigit(int cardX, int digit, uint16_t color) {
+  constexpr int top = 34;
+  constexpr int middle = 94;
+  constexpr int bottom = 154;
+  const int left = cardX + 10;
+  const int right = cardX + 34;
+
+  if (digit == 1) {
+    // A centered, poster-like one reads better than the right-aligned LED form.
+    drawPaintSegment(cardX + 23, top + 3, 10, 116, color);
+    drawPaintSegment(cardX + 15, top + 9, 18, 9, color);
+    drawPaintSegment(cardX + 14, bottom - 4, 29, 9, color);
+  } else {
+    const uint8_t segments = digit < 0 ? 0b1000000 : kDigitSegments[digit];
+    if (segments & 0b0000001) drawPaintSegment(left + 3, top, 27, 10, color);       // A
+    if (segments & 0b0000010) drawPaintSegment(right, top + 5, 10, 54, color);      // B
+    if (segments & 0b0000100) drawPaintSegment(right, middle + 5, 10, 54, color);   // C
+    if (segments & 0b0001000) drawPaintSegment(left + 3, bottom, 27, 10, color);    // D
+    if (segments & 0b0010000) drawPaintSegment(left, middle + 5, 10, 54, color);    // E
+    if (segments & 0b0100000) drawPaintSegment(left, top + 5, 10, 54, color);       // F
+    if (segments & 0b1000000) drawPaintSegment(left + 3, middle, 27, 10, color);    // G
+  }
+
+  // Deterministic chips and scratches make the bright paint look worn without
+  // storing a large bitmap in flash.
+  for (int index = 0; index < 23; index++) {
+    const int px = cardX + 8 + ((index * 17 + max(0, digit) * 11) % 39);
+    const int py = top + ((index * 29 + max(0, digit) * 7) % 130);
+    tft.drawFastHLine(px, py, 2 + index % 4, kGraffitiPanel);
+  }
+
+  if (digit >= 0) {
+    for (int drip = 0; drip < 4; drip++) {
+      const int px = cardX + 13 + ((drip * 13 + digit * 5) % 31);
+      const int length = 5 + ((drip * 7 + digit * 3) % 18);
+      tft.drawFastVLine(px, 167, length, color);
+      tft.fillCircle(px, 167 + length, 1, color);
+    }
+  }
+}
+
+void drawGraffitiCard(int index, int digit) {
+  const int x = kIdleCardX[index];
+  tft.fillRoundRect(x + 2, kIdleCardY + 3, kIdleCardWidth, kIdleCardHeight, 6,
+                    TFT_BLACK);
+  tft.fillRoundRect(x, kIdleCardY, kIdleCardWidth, kIdleCardHeight, 6,
+                    kGraffitiPanel);
+  tft.drawRoundRect(x, kIdleCardY, kIdleCardWidth, kIdleCardHeight, 6,
+                    kGraffitiPanelEdge);
+
+  for (int mark = 0; mark < 34; mark++) {
+    const int px = x + 3 + ((mark * 19 + index * 7) % (kIdleCardWidth - 7));
+    const int py = kIdleCardY + 4 + ((mark * 37 + index * 13) % (kIdleCardHeight - 9));
+    if (mark % 3 == 0) {
+      tft.drawFastHLine(px, py, 2 + mark % 7, kGraffitiTexture);
+    } else {
+      tft.drawPixel(px, py, kGraffitiPanelEdge);
+    }
+  }
+
+  drawGraffitiDigit(x, digit, digitColor(index));
+
+  const int seam = kIdleCardY + 96;
+  tft.drawFastHLine(x + 2, seam, kIdleCardWidth - 4, TFT_BLACK);
+  tft.drawFastHLine(x + 5, seam + 2, kIdleCardWidth - 10, kGraffitiPanelEdge);
+  tft.fillCircle(x + 3, seam, 2, kGraffitiPanelEdge);
+  tft.fillCircle(x + kIdleCardWidth - 4, seam, 2, kGraffitiPanelEdge);
+}
+
+void drawGraffitiColon() {
+  tft.fillCircle(120, 81, 4, kGraffitiOutline);
+  tft.fillCircle(120, 124, 4, kGraffitiOutline);
+  tft.drawFastVLine(120, 128, 12, kGraffitiOutline);
+  tft.fillCircle(120, 141, 1, kGraffitiOutline);
+}
+
+void drawIdleClockFooter() {
+  tft.fillRect(0, 202, 240, 38, kGraffitiBackground);
+  tft.drawFastHLine(12, 207, 216, kGraffitiTexture);
+
+  const BleThermometerReading thermometer = getBleThermometerReading();
+  String environment = "ROOM --";
+  if (thermometer.hasValue) {
+    environment = String(thermometer.temperatureC, 1) + "C " +
+                  String(thermometer.humidityPercent) + "%";
+  } else if (thermometer.state == BleThermometerState::kScanning ||
+             thermometer.state == BleThermometerState::kConnecting) {
+    environment = "ROOM ...";
+  }
+
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextColor(kGraffitiPanelEdge, kGraffitiBackground);
+  tft.drawString("IDLE", 12, 218, 2);
+  tft.setTextColor(kGraffitiOutline, kGraffitiBackground);
+  tft.drawString(environment, 55, 218, 2);
+  tft.fillCircle(188, 226, 3, bridgeHealthy ? kGreen : kAmber);
+  tft.setTextDatum(TR_DATUM);
+  tft.drawString(bridgeHealthy ? "LIVE" : "STALE", 228, 218, 2);
+  tft.setTextDatum(TL_DATUM);
+}
+
+void drawIdleClockScene(int hour, int minute) {
+  tft.fillScreen(kGraffitiBackground);
+  for (int index = 0; index < 4; index++) {
+    drawGraffitiCard(index, clockDigit(hour, minute, index));
+  }
+  drawGraffitiColon();
+  drawIdleClockFooter();
+}
+
+void animateIdleClockFlip(int hour, int minute) {
+  constexpr int seam = kIdleCardY + 96;
+  bool changed[4];
+  for (int index = 0; index < 4; index++) {
+    changed[index] = clockDigit(lastIdleHour, lastIdleMinute, index) !=
+                     clockDigit(hour, minute, index);
+  }
+
+  for (int bandHeight = 8; bandHeight <= 72; bandHeight += 16) {
+    for (int index = 0; index < 4; index++) {
+      if (!changed[index]) continue;
+      drawGraffitiCard(index, clockDigit(lastIdleHour, lastIdleMinute, index));
+      tft.fillRect(kIdleCardX[index] + 2, seam - bandHeight / 2,
+                   kIdleCardWidth - 4, bandHeight, kGraffitiFold);
+      tft.drawFastHLine(kIdleCardX[index] + 2, seam,
+                        kIdleCardWidth - 4, TFT_BLACK);
+    }
+    delay(25);
+  }
+
+  for (int bandHeight = 72; bandHeight >= 8; bandHeight -= 16) {
+    for (int index = 0; index < 4; index++) {
+      if (!changed[index]) continue;
+      drawGraffitiCard(index, clockDigit(hour, minute, index));
+      tft.fillRect(kIdleCardX[index] + 2, seam - bandHeight / 2,
+                   kIdleCardWidth - 4, bandHeight, kGraffitiFold);
+      tft.drawFastHLine(kIdleCardX[index] + 2, seam,
+                        kIdleCardWidth - 4, TFT_BLACK);
+    }
+    delay(25);
+  }
+
+  for (int index = 0; index < 4; index++) {
+    if (changed[index]) drawGraffitiCard(index, clockDigit(hour, minute, index));
+  }
+  drawGraffitiColon();
+}
+
+void updateIdleClock(bool forceRedraw) {
+  int hour = -1;
+  int minute = -1;
+  const bool hasTime = localClock(hour, minute);
+
+  if (forceRedraw || !idleClockSceneDrawn) {
+    drawIdleClockScene(hasTime ? hour : -1, hasTime ? minute : -1);
+    idleClockSceneDrawn = true;
+  } else if (hasTime && (lastIdleHour < 0 || lastIdleMinute < 0)) {
+    for (int index = 0; index < 4; index++) {
+      drawGraffitiCard(index, clockDigit(hour, minute, index));
+    }
+    drawGraffitiColon();
+  } else if (hasTime && (hour != lastIdleHour || minute != lastIdleMinute)) {
+    animateIdleClockFlip(hour, minute);
+  }
+
+  if (hasTime) {
+    lastIdleHour = hour;
+    lastIdleMinute = minute;
+  }
+}
+
 void drawHeader(bool online) {
   tft.fillRect(0, 0, 240, 35, kBackground);
   tft.setTextDatum(TL_DATUM);
@@ -145,6 +379,7 @@ void drawProgressBar(int x, int y, int width, float usedPercent) {
 }
 
 void drawOffline(const String &message) {
+  displayMode = DisplayMode::kOffline;
   drawHeader(false);
   tft.fillRect(0, 35, 240, 205, kBackground);
   tft.setTextColor(TFT_WHITE, kBackground);
@@ -160,8 +395,25 @@ void drawStatus(JsonDocument &doc) {
   const int resetCredits = doc["resetCredits"] | -1;
   const int runningCount = doc["runningCount"] | 0;
 
+  const bool wasBridgeHealthy = bridgeHealthy;
   bridgeHealthy = doc["ok"] | false;
   hasRenderedStatus = true;
+
+  if (runningCount == 0) {
+    const bool enteringIdleClock = displayMode != DisplayMode::kIdleClock;
+    displayMode = DisplayMode::kIdleClock;
+    if (enteringIdleClock) {
+      lastIdleHour = -1;
+      lastIdleMinute = -1;
+      idleClockSceneDrawn = false;
+      updateIdleClock(true);
+    } else if (wasBridgeHealthy != bridgeHealthy) {
+      drawIdleClockFooter();
+    }
+    return;
+  }
+
+  displayMode = DisplayMode::kStatus;
   drawHeader(bridgeHealthy);
   tft.fillRect(0, 35, 240, 181, kBackground);
 
@@ -218,7 +470,9 @@ void drawStatus(JsonDocument &doc) {
 void markConnectionStale(const String &reason) {
   bridgeHealthy = false;
   Serial.println("[bridge] " + reason);
-  if (hasRenderedStatus) {
+  if (displayMode == DisplayMode::kIdleClock) {
+    drawIdleClockFooter();
+  } else if (hasRenderedStatus) {
     drawHeader(false);
     drawFooter();
   } else {
@@ -351,6 +605,7 @@ void loop() {
     lastPollAt = millis();
     if (WiFi.status() != WL_CONNECTED) {
       WiFi.reconnect();
+      markConnectionStale("Wi-Fi disconnected");
     } else {
       fetchStatus();
     }
@@ -358,10 +613,16 @@ void loop() {
 
   if (millis() - lastClockDrawAt >= 1000) {
     lastClockDrawAt = millis();
-    drawHeader(bridgeHealthy);
-    drawFooter();
+    if (displayMode == DisplayMode::kIdleClock) {
+      updateIdleClock(false);
+      drawIdleClockFooter();
+    } else if (displayMode == DisplayMode::kStatus) {
+      drawHeader(bridgeHealthy);
+      drawFooter();
+    }
   }
-  if (hasRenderedStatus && millis() - lastResetDrawAt >= 1000) {
+  if (displayMode == DisplayMode::kStatus && hasRenderedStatus &&
+      millis() - lastResetDrawAt >= 1000) {
     lastResetDrawAt = millis();
     drawResetCountdown();
   }

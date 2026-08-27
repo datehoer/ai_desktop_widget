@@ -2,7 +2,11 @@
 
 用 ESP32-S3 NANO 和 1.54 英寸 ST7789 TFT 制作的桌面 Codex 状态屏。
 
-![Codex Usage Widget 完整成品效果与温湿度界面](output/enclosure/codex-widget-complete-ui-v1.png)
+![Codex Usage Widget 朋克涂鸦翻页钟空闲界面](output/enclosure/codex-widget-graffiti-clock-v1.png)
+
+没有运行中的 Codex 任务时，屏幕自动切换为朋克涂鸦翻页钟；任务开始后恢复额度和任务状态面板。
+
+![Codex Usage Widget 任务状态与温湿度界面](output/enclosure/codex-widget-complete-ui-v1.png)
 
 屏幕显示：
 
@@ -13,6 +17,7 @@
 - 最多两个真实任务标题，支持常用简体中文
 - 米家 `LYWSD03MMC` 的温度和湿度
 - 当前时间、Wi-Fi 信号强度和数据状态（`LIVE` / `STALE`）
+- 没有运行中的任务时自动切换为朋克涂鸦翻页钟
 - 内置 Wi-Fi 配网页面，无需为了更换网络或 Mac 地址重新烧录
 
 本文按全新 macOS 环境编写，从硬件接线到首次显示数据均可逐步复现。项目目前在 ESP32-S3 NANO（16MB Flash、8MB PSRAM）和 240×240 ST7789 SPI 屏幕上验证通过。
@@ -384,7 +389,7 @@ uv run platformio device monitor \
 3. 在手机/电脑配网页面保存 Wi-Fi 和 Bridge URL。
 4. ESP32 重启并连接 Wi-Fi。
 5. NTP 同步后顶部时间从 `--:--` 变为当前时间。
-6. 获取桥接数据后显示额度与任务。
+6. 获取桥接数据后，有运行中的任务时显示额度与任务，没有任务时显示翻页钟。
 
 界面含义：
 
@@ -397,6 +402,7 @@ uv run platformio device monitor \
 | `RUNNING` | 当前未完成的 Codex 任务数量 |
 | 任务列表 | 最多两个真实任务标题，过长时显示 `...` |
 | 底部 | Wi-Fi RSSI、BLE 温湿度和 `LIVE` / `STALE` |
+| 空闲翻页钟 | `runningCount` 为 `0` 时显示当前小时和分钟；分钟变化时播放翻页效果 |
 
 `LIVE` 表示最近一次桥接数据有效。`STALE` 表示当前请求失败，但屏幕仍保留上一次成功数据。只有设备启动后从未成功取得数据时才显示 `NO DATA`。
 
