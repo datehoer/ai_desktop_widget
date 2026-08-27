@@ -18,15 +18,18 @@ constexpr uint16_t kGreen = 0x3F67;
 constexpr uint16_t kAmber = 0xFD20;
 constexpr uint16_t kRed = 0xF986;
 constexpr unsigned long kWifiConnectTimeoutMs = 15000;
+constexpr time_t kMinimumValidEpoch = 1609459200;  // 2021-01-01 UTC
 
 TFT_eSPI tft;
 U8g2_for_TFT_eSPI utf8Font;
 WidgetConfig widgetConfig;
 unsigned long lastPollAt = 0;
 unsigned long lastClockDrawAt = 0;
+unsigned long lastResetDrawAt = 0;
 unsigned long configButtonPressedAt = 0;
 bool hasRenderedStatus = false;
 bool bridgeHealthy = false;
+int64_t weeklyResetsAt = 0;
 
 uint16_t quotaColor(float usedPercent) {
   if (usedPercent >= 90) return kRed;
@@ -36,13 +39,23 @@ uint16_t quotaColor(float usedPercent) {
 
 String timeUntil(int64_t epochSeconds) {
   if (epochSeconds <= 0) return "--";
-  const int64_t seconds = epochSeconds - time(nullptr);
+  const time_t now = time(nullptr);
+  if (now < kMinimumValidEpoch) return "--";
+  const int64_t seconds = epochSeconds - now;
   if (seconds <= 0) return "now";
   const int days = seconds / 86400;
   const int hours = (seconds % 86400) / 3600;
   if (days > 0) return String(days) + "d " + String(hours) + "h";
   const int minutes = (seconds % 3600) / 60;
   return String(hours) + "h " + String(minutes) + "m";
+}
+
+void drawResetCountdown() {
+  // Clear only the countdown value so it can update independently after NTP sync.
+  tft.fillRect(68, 89, 70, 24, kBackground);
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextColor(TFT_WHITE, kBackground);
+  tft.drawString(timeUntil(weeklyResetsAt), 69, 92, 2);
 }
 
 String fitText(String text, size_t maxLength) {
@@ -143,7 +156,7 @@ void drawOffline(const String &message) {
 
 void drawStatus(JsonDocument &doc) {
   const float weeklyUsed = doc["quota"]["weekly"]["usedPercent"] | 0.0f;
-  const int64_t resetsAt = doc["quota"]["weekly"]["resetsAt"] | 0LL;
+  weeklyResetsAt = doc["quota"]["weekly"]["resetsAt"] | 0LL;
   const int resetCredits = doc["resetCredits"] | -1;
   const int runningCount = doc["runningCount"] | 0;
 
@@ -162,8 +175,7 @@ void drawStatus(JsonDocument &doc) {
 
   tft.setTextColor(kMuted, kBackground);
   tft.drawString("RESET", 12, 93, 2);
-  tft.setTextColor(TFT_WHITE, kBackground);
-  tft.drawString(timeUntil(resetsAt), 69, 92, 2);
+  drawResetCountdown();
   tft.setTextColor(kMuted, kBackground);
   tft.drawString("CREDITS", 143, 93, 2);
   tft.setTextDatum(TR_DATUM);
@@ -348,6 +360,10 @@ void loop() {
     lastClockDrawAt = millis();
     drawHeader(bridgeHealthy);
     drawFooter();
+  }
+  if (hasRenderedStatus && millis() - lastResetDrawAt >= 1000) {
+    lastResetDrawAt = millis();
+    drawResetCountdown();
   }
   delay(250);
 }
