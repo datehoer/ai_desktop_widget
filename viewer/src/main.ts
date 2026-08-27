@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OBB } from "three/addons/math/OBB.js";
+import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { init as initGCodePreview, type WebGLPreview } from "gcode-preview";
 import {
   EdgeSettings,
@@ -9,6 +10,9 @@ import {
   RGBColor,
 } from "online-3d-viewer";
 import demoGCode from "./samples/layer-demo.gcode?raw";
+import sampleFrontUrl from "../../output/enclosure/front-black-v5-wide.stl?url";
+import sampleBackUrl from "../../output/enclosure/back-smoke-petg-v7-manifold.stl?url";
+import type { MeshHealthReport } from "./mesh-audit.worker";
 import "./styles.css";
 
 type MaterialPreset = "plastic" | "petg" | "metal";
@@ -167,8 +171,16 @@ type PartRecord = {
   initialQuaternion: THREE.Quaternion;
   initialScale: THREE.Vector3;
   material: MaterialPreset;
+  validationRole?: "front" | "back";
+  locked?: boolean;
+  meshHealthState?: "checking" | "complete" | "failed";
+  meshHealth?: MeshHealthReport;
   collisionLocalObb?: OBB;
 };
+
+const ENCLOSURE_FRONT_NAME = "front-black-v5-wide.stl";
+const ENCLOSURE_BACK_NAME = "back-smoke-petg-v7-manifold.stl";
+const ENCLOSURE_FRONT_DEPTH = 2.6;
 
 type ImportJob = {
   name: string;
@@ -224,6 +236,21 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <button id="clear-parts-button" class="section-action">清空</button>
           </div>
           <div id="parts-list" class="parts-list"></div>
+        </div>
+
+        <div class="panel-section mesh-health-section model-only">
+          <div class="section-title"><span>模型检查</span><small id="mesh-health-summary">未检查</small></div>
+          <div id="mesh-health-content" class="mesh-health-content">
+            <div class="mesh-health-empty">选择零件后自动检查可打印性</div>
+          </div>
+        </div>
+
+        <div class="panel-section enclosure-validation-section model-only">
+          <div class="section-title"><span>装配验证</span><small>TFT · ESP32</small></div>
+          <button id="electronics-validation-button" class="validation-launch-button" aria-pressed="false">
+            <span><strong>检查主体内部</strong><small>自动载入前壳 + 后壳</small></span><b>→</b>
+          </button>
+          <p class="validation-section-copy">不载入支架。电子件按设计尺寸放入，外壳自动切换为半透明剖视。</p>
         </div>
 
         <div class="panel-section transform-section model-only">
@@ -322,6 +349,26 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div id="selection-chip" class="selection-chip">
             <div><strong id="viewport-part-name">未选择零件</strong><small>拖动零件移动 · 方块缩放 · 弧形柄旋转</small></div>
           </div>
+          <aside id="electronics-validation-panel" class="electronics-validation-panel" aria-live="polite">
+            <div class="validation-panel-head">
+              <div><small>ENCLOSURE FIT</small><strong>电子件装配检查</strong></div>
+              <button id="electronics-validation-close" aria-label="关闭电子件装配检查">×</button>
+            </div>
+            <div class="validation-result pass">
+              <span>TFT PCB</span><strong>32 × 44 × 1.6 mm</strong><b>可放入</b>
+            </div>
+            <div class="validation-result pass">
+              <span>屏幕开窗压边</span><strong>四边 0.8 mm</strong><b>通过</b>
+            </div>
+            <div class="validation-result pass">
+              <span>ESP32 导轨</span><strong>单边 0.6 mm</strong><b>可滑入</b>
+            </div>
+            <div class="validation-result caution">
+              <span>内部深度</span><strong>23 + 7 = 30 mm</strong><b>余量 0 mm</b>
+            </div>
+            <p><i></i>橙色线为线材路径；当前最大风险是接头和弯线没有额外深度余量。</p>
+            <p class="validation-assumption">待实物确认：TFT 安装孔距按 28 × 40 mm 建模。</p>
+          </aside>
           <div id="empty-workspace" class="empty-workspace visible">
             <strong>拖入模型开始</strong>
             <span>STL / 3MF / OBJ / STEP</span>
@@ -398,9 +445,14 @@ const elements = {
   viewportHint: document.querySelector<HTMLDivElement>("#viewport-hint")!,
   snapButton: document.querySelector<HTMLButtonElement>("#snap-button")!,
   partsList: document.querySelector<HTMLDivElement>("#parts-list")!,
+  meshHealthSummary: document.querySelector<HTMLElement>("#mesh-health-summary")!,
+  meshHealthContent: document.querySelector<HTMLDivElement>("#mesh-health-content")!,
   selectedPartLabel: document.querySelector<HTMLElement>("#selected-part-label")!,
   emptyWorkspace: document.querySelector<HTMLDivElement>("#empty-workspace")!,
   transformReadout: document.querySelector<HTMLDivElement>("#transform-readout")!,
+  electronicsValidationButton: document.querySelector<HTMLButtonElement>("#electronics-validation-button")!,
+  electronicsValidationPanel: document.querySelector<HTMLElement>("#electronics-validation-panel")!,
+  electronicsValidationClose: document.querySelector<HTMLButtonElement>("#electronics-validation-close")!,
   collisionGuardButton: document.querySelector<HTMLButtonElement>("#collision-guard-button")!,
   physicsDropSelectedButton: document.querySelector<HTMLButtonElement>("#physics-drop-selected-button")!,
   physicsDropAllButton: document.querySelector<HTMLButtonElement>("#physics-drop-all-button")!,
@@ -427,6 +479,12 @@ let partCounter = 0;
 let importQueue: ImportJob[] = [];
 let activeImportJob: ImportJob | undefined;
 let bedObject: THREE.Group | undefined;
+let electronicsProxyRoot: THREE.Group | undefined;
+let electronicsValidationEnabled = false;
+let electronicsValidationLoading = false;
+const meshAuditWorker = new Worker(new URL("./mesh-audit.worker.ts", import.meta.url), { type: "module" });
+let meshAuditRequestCounter = 0;
+const pendingMeshAudits = new Map<number, string>();
 let selectionHelper: THREE.BoxHelper | undefined;
 const colorSchemeMedia = window.matchMedia("(prefers-color-scheme: dark)");
 let transformSnapEnabled = false;
@@ -563,6 +621,169 @@ function markPartHierarchy(part: PartRecord): void {
   });
 }
 
+function meshHealthBadge(part: PartRecord): string {
+  if (part.meshHealthState === "checking") return "检查中";
+  if (part.meshHealthState === "failed") return "检查失败";
+  if (part.meshHealth) {
+    if (!part.meshHealth.printable) return "有错误";
+    if (part.meshHealth.needsReview) return "需确认";
+    return "已通过";
+  }
+  return part.locked ? "已锁定" : extensionOf(part.name).toUpperCase();
+}
+
+function renderMeshHealth(): void {
+  const part = selectedPart();
+  if (!part) {
+    elements.meshHealthSummary.textContent = "未检查";
+    elements.meshHealthSummary.dataset.state = "idle";
+    elements.meshHealthContent.innerHTML = '<div class="mesh-health-empty">选择零件后自动检查可打印性</div>';
+    return;
+  }
+  if (part.meshHealthState === "checking") {
+    elements.meshHealthSummary.textContent = "检查中";
+    elements.meshHealthSummary.dataset.state = "checking";
+    elements.meshHealthContent.innerHTML = '<div class="mesh-health-progress"><i></i><span>正在建立边与三角面的邻接关系…</span></div>';
+    return;
+  }
+  if (part.meshHealthState === "failed" || !part.meshHealth) {
+    elements.meshHealthSummary.textContent = "检查失败";
+    elements.meshHealthSummary.dataset.state = "error";
+    elements.meshHealthContent.innerHTML = '<div class="mesh-health-verdict error"><strong>无法完成检查</strong><span>不要据此判断模型可以打印</span></div>';
+    return;
+  }
+
+  const report = part.meshHealth;
+  const verdictState = !report.printable ? "error" : report.needsReview ? "caution" : "pass";
+  const verdictTitle = !report.printable ? "不可直接打印" : report.needsReview ? "需要确认" : "拓扑检查通过";
+  const verdictCopy = !report.printable
+    ? "模型包含必须修复的网格错误"
+    : report.needsReview
+      ? "网格封闭，但包含多个独立壳体"
+      : "封闭流形，可继续切片检查";
+  elements.meshHealthSummary.textContent = verdictTitle;
+  elements.meshHealthSummary.dataset.state = verdictState;
+
+  const rows = [
+    {
+      label: "多壳体结构",
+      state: report.shellCount <= 1 ? "pass" : "caution",
+      value: report.shellCount <= 1 ? "不存在" : `存在 ${report.shellCount} 个壳体`,
+    },
+    {
+      label: "坏边（非流形）",
+      state: report.nonManifoldEdgeCount === 0 ? "pass" : "error",
+      value: report.nonManifoldEdgeCount === 0 ? "不存在" : `存在 ${report.nonManifoldEdgeCount} 条`,
+    },
+    {
+      label: "孔洞缺陷",
+      state: report.boundaryEdgeCount === 0 ? "pass" : "error",
+      value: report.boundaryEdgeCount === 0
+        ? "不存在"
+        : `${report.boundaryEdgeCount} 条开放边 · ${report.boundaryLoopCount} 处`,
+    },
+    {
+      label: "反向三角面",
+      state: report.inconsistentWindingEdgeCount === 0 && report.reversedShellCount === 0 ? "pass" : "error",
+      value: report.inconsistentWindingEdgeCount === 0 && report.reversedShellCount === 0
+        ? "不存在"
+        : `${report.inconsistentWindingEdgeCount} 条方向冲突 · ${report.reversedShellCount} 个反向壳体`,
+    },
+    {
+      label: "重复三角面",
+      state: report.duplicateTriangleCount === 0 ? "pass" : "error",
+      value: report.duplicateTriangleCount === 0 ? "不存在" : `存在 ${report.duplicateTriangleCount} 个`,
+    },
+    {
+      label: "退化三角面",
+      state: report.degenerateTriangleCount === 0 ? "pass" : "error",
+      value: report.degenerateTriangleCount === 0 ? "不存在" : `存在 ${report.degenerateTriangleCount} 个`,
+    },
+  ];
+  elements.meshHealthContent.innerHTML = `
+    <div class="mesh-health-verdict ${verdictState}"><strong>${verdictTitle}</strong><span>${verdictCopy}</span></div>
+    <div class="mesh-health-results">
+      ${rows.map((row) => `
+        <div class="mesh-health-row ${row.state}">
+          <span>${row.label}</span><strong>${row.value}</strong><i aria-hidden="true"></i>
+        </div>
+      `).join("")}
+    </div>
+    <div class="mesh-health-meta">
+      <span>${formatCount(report.triangleCount)} 三角面</span>
+      <span>${formatCount(report.uniqueVertexCount)} 焊接顶点</span>
+      <span>${report.closedVolumeCm3 === undefined ? "体积不可验证" : `${report.closedVolumeCm3.toFixed(2)} cm³`}</span>
+    </div>
+    <p class="mesh-health-note">拓扑检查不代替切片器的薄壁、悬垂和材料收缩分析。</p>
+  `;
+}
+
+function collectPartTriangleSoup(part: PartRecord): Float32Array {
+  part.root.updateMatrixWorld(true);
+  const inverseRoot = part.root.matrixWorld.clone().invert();
+  const meshToRoot = new THREE.Matrix4();
+  const point = new THREE.Vector3();
+  const values: number[] = [];
+  part.root.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.geometry) return;
+    const position = mesh.geometry.getAttribute("position") as THREE.BufferAttribute | undefined;
+    if (!position || position.count < 3) return;
+    mesh.updateWorldMatrix(true, false);
+    meshToRoot.multiplyMatrices(inverseRoot, mesh.matrixWorld);
+    const indices = mesh.geometry.index;
+    const cornerCount = indices ? indices.count : position.count;
+    const triangleCornerCount = cornerCount - cornerCount % 3;
+    for (let corner = 0; corner < triangleCornerCount; corner += 1) {
+      const vertexIndex = indices ? indices.getX(corner) : corner;
+      point.fromBufferAttribute(position, vertexIndex).applyMatrix4(meshToRoot);
+      values.push(point.x, point.y, point.z);
+    }
+  });
+  return Float32Array.from(values);
+}
+
+function queueMeshAudit(part: PartRecord): void {
+  const triangles = collectPartTriangleSoup(part);
+  const requestId = ++meshAuditRequestCounter;
+  part.meshHealthState = "checking";
+  part.meshHealth = undefined;
+  pendingMeshAudits.set(requestId, part.id);
+  if (part.id === selectedPartId) renderMeshHealth();
+  renderPartsList();
+  meshAuditWorker.postMessage({ requestId, partId: part.id, triangles }, [triangles.buffer]);
+}
+
+meshAuditWorker.addEventListener("message", (event: MessageEvent<{
+  requestId: number;
+  partId: string;
+  report: MeshHealthReport;
+}>) => {
+  const { requestId, partId, report } = event.data;
+  if (pendingMeshAudits.get(requestId) !== partId) return;
+  pendingMeshAudits.delete(requestId);
+  const part = parts.find((item) => item.id === partId);
+  if (!part) return;
+  part.meshHealth = report;
+  part.meshHealthState = "complete";
+  renderPartsList();
+  if (part.id === selectedPartId) {
+    renderMeshHealth();
+    if (!report.printable) showToast(`${part.name} 存在网格错误，不可直接打印`, true);
+  }
+});
+
+meshAuditWorker.addEventListener("error", (event) => {
+  console.error("Mesh audit worker failed", event);
+  for (const partId of pendingMeshAudits.values()) {
+    const part = parts.find((item) => item.id === partId);
+    if (part) part.meshHealthState = "failed";
+  }
+  pendingMeshAudits.clear();
+  renderPartsList();
+  renderMeshHealth();
+});
+
 function renderPartsList(): void {
   if (!parts.length) {
     elements.partsList.innerHTML = '<div class="empty-parts">添加零件后可在这里选择和编辑</div>';
@@ -572,7 +793,7 @@ function renderPartsList(): void {
     <button class="part-item ${part.id === selectedPartId ? "active" : ""}" data-part-id="${part.id}">
       <span>${String(index + 1).padStart(2, "0")}</span>
       <strong title="${part.name}">${part.name}</strong>
-      <small>${extensionOf(part.name).toUpperCase()}</small>
+      <small data-health-state="${part.meshHealthState === "complete" && part.meshHealth?.printable ? "pass" : part.meshHealthState === "complete" ? "error" : part.meshHealthState ?? "idle"}">${meshHealthBadge(part)}</small>
     </button>
   `).join("");
   elements.partsList.querySelectorAll<HTMLButtonElement>("[data-part-id]").forEach((button) => {
@@ -587,13 +808,13 @@ function updatePartsListSelection(): void {
 }
 
 function activeTransformRoot(): THREE.Object3D | undefined {
-  return modelRoot;
+  return selectedPart()?.locked ? undefined : modelRoot;
 }
 
 function updateTransformPanel(): void {
   const part = selectedPart();
-  const target = activeTransformRoot();
-  const canEdit = currentMode === "model" && Boolean(target) && !physicsWorld && !physicsStarting;
+  const target = modelRoot;
+  const canEdit = currentMode === "model" && Boolean(activeTransformRoot()) && !physicsWorld && !physicsStarting;
   elements.selectedPartLabel.textContent = part?.name ?? "未选择";
   document.querySelectorAll<HTMLInputElement>("[data-transform]").forEach((input) => {
     const kind = input.dataset.transform as TransformKind;
@@ -633,10 +854,14 @@ function syncTransformControl(): void {
   const physicsActive = Boolean(physicsWorld || physicsStarting);
   elements.viewportHint.textContent = physicsActive
     ? "物理模拟运行中 · 暂停或恢复位置后继续编辑"
-    : `拖动零件移动 · 方块缩放 · 弧形柄旋转 · ${collisionGuardEnabled ? "防穿透已开启" : "防穿透已关闭"}`;
+    : selectedPart()?.locked
+      ? "装配位置已锁定 · 拖动画布旋转观察 · 关闭剖视后可编辑零件"
+      : `拖动零件移动 · 方块缩放 · 弧形柄旋转 · ${collisionGuardEnabled ? "防穿透已开启" : "防穿透已关闭"}`;
   elements.selectionChip.querySelector("small")!.textContent = physicsActive
     ? "刚体碰撞已开启 · 变换控制暂时锁定"
-    : "拖动零件移动 · 方块缩放 · 弧形柄旋转";
+    : selectedPart()?.locked
+      ? "装配验证位置已锁定 · 可拖动画布旋转观察"
+      : "拖动零件移动 · 方块缩放 · 弧形柄旋转";
   elements.viewportPartName.textContent = selectedPart()?.name ?? "未选择零件";
   updateCombinedGizmo();
 }
@@ -678,6 +903,7 @@ function updateSelectedPartView(rebuildList = true): void {
     elements.triangles.textContent = "—";
     elements.meshCount.textContent = "—";
   }
+  renderMeshHealth();
   syncTransformControl();
   refreshSelectionHelper();
   syncPhysicsControls();
@@ -842,11 +1068,233 @@ function applyMaterial(root: THREE.Object3D, preset: MaterialPreset): void {
       physical.opacity = config.opacity;
       physical.transparent = config.opacity < 1;
       physical.depthWrite = config.opacity >= 1;
+      physical.side = THREE.FrontSide;
       physical.wireframe = wireframeEnabled;
       physical.needsUpdate = true;
     }
   });
   embeddedViewer.GetViewer().Render();
+}
+
+function createProxyBox(
+  name: string,
+  size: THREE.Vector3,
+  position: THREE.Vector3,
+  color: string,
+  opacity = 0.82,
+): THREE.Group {
+  const group = new THREE.Group();
+  group.name = name;
+  const geometry = new THREE.BoxGeometry(size.x, size.y, size.z);
+  const mesh = new THREE.Mesh(
+    geometry,
+    new THREE.MeshPhysicalMaterial({
+      color,
+      roughness: 0.42,
+      metalness: 0.04,
+      transparent: opacity < 1,
+      opacity,
+      depthWrite: opacity >= 0.65,
+      side: THREE.DoubleSide,
+    }),
+  );
+  mesh.position.copy(position);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  group.add(mesh);
+  const edges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(geometry),
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity: Math.min(1, opacity + 0.18) }),
+  );
+  edges.position.copy(position);
+  group.add(edges);
+  return group;
+}
+
+function createElectronicsProxy(): THREE.Group {
+  const root = new THREE.Group();
+  root.name = "electronics-fit-proxy";
+
+  const cavityGeometry = new THREE.BoxGeometry(45.2, 73.2, 30);
+  const cavity = new THREE.LineSegments(
+    new THREE.EdgesGeometry(cavityGeometry),
+    new THREE.LineBasicMaterial({ color: "#22c3a6", transparent: true, opacity: 0.34 }),
+  );
+  cavity.position.set(0, 0, 17.6);
+  root.add(cavity);
+
+  root.add(createProxyBox("TFT display", new THREE.Vector3(32, 33, 2.4), new THREE.Vector3(0, 7, 3.8), "#62d8ff", 0.78));
+  root.add(createProxyBox("TFT PCB", new THREE.Vector3(32, 44, 1.6), new THREE.Vector3(0, 7, 5.8), "#16a66a", 0.88));
+  root.add(createProxyBox("ESP32 PCB", new THREE.Vector3(20.5, 52, 1.6), new THREE.Vector3(0, -7, 29.8), "#3978d4", 0.88));
+  root.add(createProxyBox("ESP32 module", new THREE.Vector3(14, 18, 2.4), new THREE.Vector3(0, 2, 27.8), "#b9c3cf", 0.88));
+  root.add(createProxyBox("USB connector", new THREE.Vector3(9, 5, 3), new THREE.Vector3(0, -29, 33.2), "#d7dde4", 0.9));
+
+  const wirePath = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-9, -12, 6.8),
+    new THREE.Vector3(-8, -19, 12),
+    new THREE.Vector3(5, -15, 20),
+    new THREE.Vector3(7, -20, 27.5),
+    new THREE.Vector3(0, -27, 29.2),
+  ]);
+  const wire = new THREE.Mesh(
+    new THREE.TubeGeometry(wirePath, 44, 0.65, 7, false),
+    new THREE.MeshStandardMaterial({ color: "#ff681f", emissive: "#8c2100", emissiveIntensity: 0.22, roughness: 0.5 }),
+  );
+  wire.name = "wiring-path";
+  root.add(wire);
+  return root;
+}
+
+function setValidationShellAppearance(enabled: boolean): void {
+  for (const part of parts.filter((item) => item.validationRole)) {
+    if (!enabled) {
+      applyMaterial(part.root, part.material);
+      continue;
+    }
+    part.root.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const material of materials) {
+        const physical = material as THREE.MeshPhysicalMaterial;
+        physical.color?.set(part.validationRole === "front" ? "#25282c" : "#9ba5ae");
+        physical.opacity = part.validationRole === "front" ? 0.2 : 0.14;
+        physical.transparent = true;
+        physical.depthWrite = false;
+        physical.side = THREE.DoubleSide;
+        physical.wireframe = false;
+        physical.needsUpdate = true;
+      }
+    });
+  }
+}
+
+function syncElectronicsValidationUi(): void {
+  elements.electronicsValidationPanel.classList.toggle("visible", electronicsValidationEnabled);
+  elements.electronicsValidationButton.classList.toggle("active", electronicsValidationEnabled);
+  elements.electronicsValidationButton.setAttribute("aria-pressed", String(electronicsValidationEnabled));
+  elements.electronicsValidationButton.disabled = electronicsValidationLoading;
+  const label = elements.electronicsValidationButton.querySelector("strong");
+  const detail = elements.electronicsValidationButton.querySelector("small");
+  if (label) label.textContent = electronicsValidationLoading
+    ? "正在载入主体…"
+    : electronicsValidationEnabled
+      ? "关闭内部剖视"
+      : "检查主体内部";
+  if (detail) detail.textContent = electronicsValidationEnabled
+    ? "保留前壳 + 后壳"
+    : "自动载入前壳 + 后壳";
+}
+
+async function createValidationPart(
+  name: string,
+  url: string,
+  role: "front" | "back",
+  material: MaterialPreset,
+): Promise<PartRecord> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Unable to load ${name}: ${response.status}`);
+  const geometry = new STLLoader().parse(await response.arrayBuffer());
+  geometry.computeVertexNormals();
+  const root = new THREE.Group();
+  root.name = name;
+  // Online3DViewer assumes every main-object mesh exposes an iterable
+  // material list, matching the meshes produced by its own importers.
+  root.add(new THREE.Mesh(geometry, [new THREE.MeshPhysicalMaterial()]));
+  const part: PartRecord = {
+    id: `part-${++partCounter}`,
+    name,
+    root,
+    initialPosition: root.position.clone(),
+    initialQuaternion: root.quaternion.clone(),
+    initialScale: root.scale.clone(),
+    material,
+    validationRole: role,
+    locked: true,
+  };
+  markPartHierarchy(part);
+  part.collisionLocalObb = new OBB().fromBox3(computePartLocalBounds(part));
+  return part;
+}
+
+function prepareValidationPart(part: PartRecord, role: "front" | "back"): void {
+  part.validationRole = role;
+  part.locked = true;
+  part.root.position.set(0, 0, role === "back" ? ENCLOSURE_FRONT_DEPTH : 0);
+  part.root.rotation.set(0, 0, 0);
+  part.root.scale.set(1, 1, 1);
+  part.root.updateMatrixWorld(true);
+  part.initialPosition.copy(part.root.position);
+  part.initialQuaternion.copy(part.root.quaternion);
+  part.initialScale.copy(part.root.scale);
+  applyMaterial(part.root, part.material);
+}
+
+async function enableElectronicsValidation(): Promise<void> {
+  if (electronicsValidationLoading || electronicsValidationEnabled) return;
+  if (activeImportJob || importQueue.length) {
+    showToast("请等待当前模型载入完成后再检查", true);
+    return;
+  }
+  if (physicsWorld || physicsStarting) stopPhysics(true, false);
+  electronicsValidationLoading = true;
+  syncElectronicsValidationUi();
+  showLoading(true);
+  try {
+    let front = parts.find((part) => part.validationRole === "front" || part.name.toLowerCase() === ENCLOSURE_FRONT_NAME);
+    let back = parts.find((part) => part.validationRole === "back" || part.name.toLowerCase() === ENCLOSURE_BACK_NAME);
+    const created = await Promise.all([
+      front ? Promise.resolve(undefined) : createValidationPart(ENCLOSURE_FRONT_NAME, sampleFrontUrl, "front", "plastic"),
+      back ? Promise.resolve(undefined) : createValidationPart(ENCLOSURE_BACK_NAME, sampleBackUrl, "back", "petg"),
+    ]);
+    if (!front && created[0]) {
+      front = created[0];
+      parts.push(front);
+    }
+    if (!back && created[1]) {
+      back = created[1];
+      parts.push(back);
+    }
+    if (!front || !back) throw new Error("Enclosure parts are incomplete");
+    prepareValidationPart(front, "front");
+    prepareValidationPart(back, "back");
+    electronicsProxyRoot ??= createElectronicsProxy();
+    electronicsValidationEnabled = true;
+    selectedPartId = front.id;
+    if (!front.meshHealthState) queueMeshAudit(front);
+    if (!back.meshHealthState) queueMeshAudit(back);
+    rebuildWorkspace(true);
+    window.setTimeout(() => {
+      if (!electronicsValidationEnabled) return;
+      embeddedViewer.Resize();
+      const viewer = embeddedViewer.GetViewer();
+      viewer.FitSphereToWindow(viewer.GetBoundingSphere(() => true), true);
+    }, 180);
+    clearEditQueryWorld();
+    showToast("主体已对齐：TFT / ESP32 可放入，但深度余量为 0 mm");
+  } catch (error) {
+    console.error(error);
+    electronicsValidationEnabled = false;
+    for (const part of parts.filter((item) => item.validationRole)) part.locked = false;
+    showToast("无法载入主体装配验证", true);
+  } finally {
+    electronicsValidationLoading = false;
+    showLoading(false);
+    syncElectronicsValidationUi();
+  }
+}
+
+function disableElectronicsValidation(): void {
+  if (!electronicsValidationEnabled) return;
+  electronicsValidationEnabled = false;
+  for (const part of parts.filter((item) => item.validationRole)) part.locked = false;
+  setValidationShellAppearance(false);
+  electronicsProxyRoot?.removeFromParent();
+  if (electronicsProxyRoot) disposeObject(electronicsProxyRoot);
+  electronicsProxyRoot = undefined;
+  rebuildWorkspace(false);
+  syncElectronicsValidationUi();
+  showToast("已关闭电子件剖视，主体零件可以继续编辑");
 }
 
 function setPhysicsStatus(state: "idle" | "loading" | "running" | "paused", label: string): void {
@@ -858,8 +1306,8 @@ function syncPhysicsControls(): void {
   const hasParts = parts.length > 0;
   const hasSelected = Boolean(selectedPart());
   const active = Boolean(physicsWorld);
-  elements.physicsDropSelectedButton.disabled = physicsStarting || !hasSelected;
-  elements.physicsDropAllButton.disabled = physicsStarting || !hasParts;
+  elements.physicsDropSelectedButton.disabled = electronicsValidationEnabled || physicsStarting || !hasSelected;
+  elements.physicsDropAllButton.disabled = electronicsValidationEnabled || physicsStarting || !hasParts;
   elements.physicsPauseButton.disabled = !active;
   elements.physicsResetButton.disabled = !active;
   elements.physicsPauseButton.textContent = physicsPaused ? "继续" : "暂停";
@@ -1575,6 +2023,11 @@ function rebuildWorkspace(fitView = true): void {
     const workspaceBox = new THREE.Box3().setFromObject(workspaceRoot);
     bedObject = createBed(workspaceBox);
     viewer.AddExtraObject(bedObject);
+    if (electronicsValidationEnabled) {
+      electronicsProxyRoot ??= createElectronicsProxy();
+      viewer.AddExtraObject(electronicsProxyRoot);
+      setValidationShellAppearance(true);
+    }
     if (fitView) viewer.FitSphereToWindow(viewer.GetBoundingSphere(() => true), false);
   } else {
     bedObject = undefined;
@@ -1646,6 +2099,7 @@ function onModelLoaded(): void {
   applyMaterial(part.root, part.material);
   parts.push(part);
   selectedPartId = part.id;
+  queueMeshAudit(part);
   document.querySelector<HTMLButtonElement>("#gcode-demo-button")?.classList.remove("active");
   activeImportJob = undefined;
 
@@ -2442,6 +2896,10 @@ async function loadFiles(fileList: FileList | File[]): Promise<void> {
 function clearWorkspace(): void {
   if (parts.length && !window.confirm(`确定清空工作区中的 ${parts.length} 个零件吗？`)) return;
   if (physicsWorld || physicsStarting) stopPhysics(true, false);
+  electronicsValidationEnabled = false;
+  electronicsProxyRoot?.removeFromParent();
+  if (electronicsProxyRoot) disposeObject(electronicsProxyRoot);
+  electronicsProxyRoot = undefined;
   for (const part of parts) disposeObject(part.root);
   parts = [];
   selectedPartId = undefined;
@@ -2450,6 +2908,7 @@ function clearWorkspace(): void {
   activeImportJob = undefined;
   rebuildWorkspace();
   clearEditQueryWorld();
+  syncElectronicsValidationUi();
   showToast("工作区已清空");
 }
 
@@ -2511,6 +2970,7 @@ function duplicateSelectedPart(): void {
   part.collisionLocalObb = new OBB().fromBox3(computePartLocalBounds(part));
   parts.push(part);
   selectedPartId = part.id;
+  queueMeshAudit(part);
   rebuildWorkspace(false);
   clearEditQueryWorld();
   showToast(`已复制 ${source.name}`);
@@ -2659,6 +3119,11 @@ document.querySelector<HTMLButtonElement>("#reset-part-button")!.addEventListene
 document.querySelector<HTMLButtonElement>("#viewport-place-button")!.addEventListener("click", placeSelectedPartOnBed);
 document.querySelector<HTMLButtonElement>("#viewport-duplicate-button")!.addEventListener("click", duplicateSelectedPart);
 document.querySelector<HTMLButtonElement>("#viewport-delete-button")!.addEventListener("click", removeSelectedPart);
+elements.electronicsValidationButton.addEventListener("click", () => {
+  if (electronicsValidationEnabled) disableElectronicsValidation();
+  else void enableElectronicsValidation();
+});
+elements.electronicsValidationClose.addEventListener("click", disableElectronicsValidation);
 elements.physicsDropSelectedButton.addEventListener("click", () => { void startPhysics("selected"); });
 elements.physicsDropAllButton.addEventListener("click", () => { void startPhysics("all"); });
 elements.physicsPauseButton.addEventListener("click", togglePhysicsPause);
@@ -2756,6 +3221,7 @@ resizeObserver.observe(elements.viewport);
 initModelViewer();
 restoreInspectorTheme();
 syncPhysicsControls();
+syncElectronicsValidationUi();
 switchMode("model");
 
 colorSchemeMedia.addEventListener("change", () => {

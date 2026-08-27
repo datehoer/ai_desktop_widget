@@ -243,6 +243,31 @@ label:focus-within {
 .sample-item span { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .sample-item b { color: var(--accent); font-size: 14px; font-weight: 500; }
 
+.enclosure-validation-section { padding-bottom: 18px; }
+.validation-launch-button {
+  display: grid;
+  width: 100%;
+  min-height: 54px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
+}
+.validation-launch-button:hover { border-color: var(--accent); }
+.validation-launch-button.active { border-color: var(--accent); background: var(--accent-soft); }
+.validation-launch-button:disabled { opacity: 0.55; cursor: wait; }
+.validation-launch-button span,
+.validation-launch-button strong,
+.validation-launch-button small { display: block; min-width: 0; }
+.validation-launch-button strong { color: var(--ink); font-size: 12px; font-weight: 650; }
+.validation-launch-button small { margin-top: 4px; color: var(--muted); font-size: 10px; font-weight: 400; }
+.validation-launch-button b { color: var(--accent); font-size: 17px; font-weight: 500; }
+.validation-section-copy { margin: 9px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+
 .parts-section { padding-bottom: 16px; }
 .parts-list { display: grid; }
 
@@ -291,6 +316,75 @@ kbd {
 .part-item > span { color: var(--faint); font-size: 10px; }
 .part-item strong { overflow: hidden; font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .part-item small { color: var(--accent); font-size: 8px; }
+.part-item small[data-health-state="pass"] { color: #208950; }
+.part-item small[data-health-state="error"],
+.part-item small[data-health-state="failed"] { color: var(--danger); }
+.part-item small[data-health-state="checking"] { color: #b97812; }
+
+.mesh-health-section { padding-bottom: 18px; }
+.mesh-health-section .section-title small[data-state="pass"] { color: #208950; }
+.mesh-health-section .section-title small[data-state="caution"],
+.mesh-health-section .section-title small[data-state="checking"] { color: #b97812; }
+.mesh-health-section .section-title small[data-state="error"] { color: var(--danger); }
+.mesh-health-empty {
+  padding: 10px 11px;
+  border: 1px dashed var(--line);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.mesh-health-progress {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 42px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10px;
+}
+.mesh-health-progress i {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border: 1px solid #b97812;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+}
+.mesh-health-verdict {
+  display: flex;
+  min-height: 48px;
+  flex-direction: column;
+  justify-content: center;
+  padding: 8px 11px;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+}
+.mesh-health-verdict strong { font-size: 12px; font-weight: 650; }
+.mesh-health-verdict span { margin-top: 3px; color: var(--muted); font-size: 9px; line-height: 1.4; }
+.mesh-health-verdict.pass { border-left-color: #208950; background: color-mix(in srgb, #208950 7%, var(--surface)); }
+.mesh-health-verdict.caution { border-left-color: #b97812; background: color-mix(in srgb, #b97812 8%, var(--surface)); }
+.mesh-health-verdict.error { border-left-color: var(--danger); background: color-mix(in srgb, var(--danger) 7%, var(--surface)); }
+.mesh-health-results { border-right: 1px solid var(--line); border-left: 1px solid var(--line); }
+.mesh-health-row {
+  display: grid;
+  min-height: 34px;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.2fr) 8px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line);
+}
+.mesh-health-row span { color: var(--muted); font-size: 9px; }
+.mesh-health-row strong { overflow: hidden; font-family: "Geist Mono", ui-monospace, monospace; font-size: 8px; font-weight: 600; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.mesh-health-row i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.mesh-health-row.pass i { background: #208950; }
+.mesh-health-row.caution i { background: #b97812; }
+.mesh-health-row.error { color: var(--danger); }
+.mesh-health-row.error i { background: var(--danger); }
+.mesh-health-meta { display: flex; flex-wrap: wrap; gap: 5px 9px; padding: 9px 1px 0; color: var(--faint); font-family: "Geist Mono", ui-monospace, monospace; font-size: 8px; }
+.mesh-health-note { margin: 8px 0 0; color: var(--faint); font-size: 9px; line-height: 1.5; }
 
 .transform-section { padding-bottom: 19px; }
 .transform-block { margin-top: 14px; }
@@ -614,6 +708,74 @@ kbd {
 .selection-chip strong { font-size: 11px; font-weight: 600; }
 .selection-chip small { margin-top: 4px; color: var(--muted); font-size: 10px; }
 
+.electronics-validation-panel {
+  position: absolute;
+  z-index: 8;
+  top: 16px;
+  right: 18px;
+  display: grid;
+  visibility: hidden;
+  width: min(328px, calc(100% - 36px));
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: 0 18px 46px rgb(0 0 0 / 0.12);
+  opacity: 0;
+  transform: translateY(-5px);
+  pointer-events: none;
+  backdrop-filter: blur(14px);
+  transition: opacity 140ms ease, transform 140ms ease, visibility 140ms;
+}
+.electronics-validation-panel.visible { visibility: visible; opacity: 1; transform: translateY(0); pointer-events: auto; }
+.validation-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.validation-panel-head small,
+.validation-panel-head strong { display: block; }
+.validation-panel-head small { margin-bottom: 3px; color: var(--accent); font-family: "Geist Mono", ui-monospace, monospace; font-size: 8px; letter-spacing: 0.12em; }
+.validation-panel-head strong { font-size: 13px; font-weight: 650; }
+.validation-panel-head button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+}
+.validation-panel-head button:hover { border-color: var(--ink); color: var(--ink); }
+.validation-result {
+  display: grid;
+  grid-template-columns: minmax(82px, 0.9fr) minmax(104px, 1.2fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 39px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10px;
+}
+.validation-result span { color: var(--muted); }
+.validation-result strong { font-family: "Geist Mono", ui-monospace, monospace; font-size: 9px; font-weight: 600; }
+.validation-result b { padding-left: 8px; border-left: 2px solid currentColor; font-size: 9px; font-weight: 650; white-space: nowrap; }
+.validation-result.pass b { color: #208950; }
+.validation-result.caution { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.validation-result.caution b { color: var(--accent); }
+.electronics-validation-panel > p {
+  position: relative;
+  margin: 0;
+  padding: 11px 14px 11px 31px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.55;
+}
+.electronics-validation-panel > p i { position: absolute; top: 16px; left: 14px; width: 9px; height: 2px; background: var(--accent); }
+.electronics-validation-panel > p.validation-assumption { padding-top: 0; color: var(--faint); }
+
 .viewport-hint {
   position: absolute;
   z-index: 5;
@@ -867,6 +1029,8 @@ kbd {
   .control-panel { display: grid; order: 2; overflow: visible; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); border-right: 0; }
   .control-panel .panel-section { min-width: 0; }
   .parts-section,
+  .mesh-health-section,
+  .enclosure-validation-section,
   .transform-section,
   .material-section,
   .physics-section { grid-column: 1 / -1; }
