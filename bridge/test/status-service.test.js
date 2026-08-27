@@ -1,8 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   chooseQuotaWindows,
   lastTaskLifecycle,
+  RolloutActivityTracker,
   StatusService,
   taskDisplayName,
 } from "../src/status-service.js";
@@ -33,6 +37,28 @@ test("detects the latest rollout task lifecycle", () => {
   assert.equal(lastTaskLifecycle([started, token, aborted]), "idle");
   assert.equal(lastTaskLifecycle([aborted, started, token]), "active");
   assert.equal(lastTaskLifecycle([token]), null);
+});
+
+test("expires a rollout that stays active without file updates", (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codex-rollout-"));
+  const rolloutPath = path.join(directory, "rollout.jsonl");
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+
+  fs.writeFileSync(rolloutPath, `${JSON.stringify({
+    type: "event_msg",
+    payload: { type: "task_started" },
+  })}\n`);
+  fs.utimesSync(rolloutPath, new Date(9_000), new Date(9_000));
+
+  let now = 10_000;
+  const tracker = new RolloutActivityTracker({
+    staleAfterMs: 1_000,
+    now: () => now,
+  });
+
+  assert.equal(tracker.isActive(rolloutPath), true);
+  now = 10_001;
+  assert.equal(tracker.isActive(rolloutPath), false);
 });
 
 test("preserves Chinese task titles for the TFT UTF-8 font", () => {

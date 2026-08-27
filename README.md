@@ -228,6 +228,7 @@ curl http://127.0.0.1:8787/api/status
 | `PORT` | `8787` | HTTP 监听端口 |
 | `HOST` | `0.0.0.0` | HTTP 监听地址 |
 | `REFRESH_MS` | `5000` | 后台刷新间隔，毫秒 |
+| `RUNNING_STALE_MS` | `1800000` | rollout 无更新超过此时长后不再计为运行中；设为 `0` 可禁用过期判断 |
 | `CODEX_BIN` | `codex` | 自定义 Codex CLI 绝对路径 |
 | `DEBUG_CODEX_BRIDGE` | 未启用 | 设为 `1` 后显示 App Server 日志 |
 
@@ -559,7 +560,7 @@ npm run service:uninstall
 
 ### 11. `RUNNING` 数量和肉眼观察不一致
 
-桥接服务根据本地 rollout 文件最后一个 `task_started`、`task_complete` 或 `task_cancelled` 事件判断。异常退出、文件损坏或 Codex 内部格式变化可能导致短时不一致。先等待一个刷新周期，再重启桥接服务确认。
+桥接服务根据本地 rollout 文件最后一个 `task_started`、`task_complete`、`task_cancelled` 或 `turn_aborted` 事件判断。为避免异常退出留下永久运行状态，仍为 `task_started` 但连续 30 分钟没有文件更新的任务会自动过期；可通过 `RUNNING_STALE_MS` 调整。短时不一致时先等待一个刷新周期，再重启桥接服务确认。
 
 ### 12. PlatformIO 下载失败
 

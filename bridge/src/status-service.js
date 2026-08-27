@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 
 const WEEK_MINUTES = 7 * 24 * 60;
+export const DEFAULT_RUNNING_STALE_MS = 30 * 60 * 1000;
 
 export function chooseQuotaWindows(rateLimitResponse) {
   const byId = rateLimitResponse?.rateLimitsByLimitId;
@@ -88,37 +89,49 @@ export function lastTaskLifecycle(lines) {
   return null;
 }
 
-class RolloutActivityTracker {
-  constructor() {
+export class RolloutActivityTracker {
+  constructor({ staleAfterMs = DEFAULT_RUNNING_STALE_MS, now = Date.now } = {}) {
     this.cache = new Map();
+    this.staleAfterMs = Number.isFinite(staleAfterMs) && staleAfterMs >= 0
+      ? staleAfterMs
+      : DEFAULT_RUNNING_STALE_MS;
+    this.now = now;
   }
 
   isActive(filePath) {
     if (!filePath) return false;
-    let size;
+    let stat;
     try {
-      size = fs.statSync(filePath).size;
+      stat = fs.statSync(filePath);
     } catch {
       return false;
     }
 
+    const { size, mtimeMs } = stat;
     const cached = this.cache.get(filePath);
-    if (cached?.size === size) return cached.active;
+    if (cached?.size === size && cached?.mtimeMs === mtimeMs) {
+      return this.#isRecentlyActive(cached.lifecycle, mtimeMs);
+    }
 
     let lifecycle = null;
     if (cached && size > cached.size) {
       lifecycle = this.#readRange(filePath, cached.size, size);
       if (!lifecycle) {
-        this.cache.set(filePath, { size, active: cached.active });
-        return cached.active;
+        lifecycle = cached.lifecycle;
       }
     } else {
       lifecycle = this.#scanBackward(filePath, size);
     }
 
-    const active = lifecycle === "active";
-    this.cache.set(filePath, { size, active });
-    return active;
+    this.cache.set(filePath, { size, mtimeMs, lifecycle });
+    return this.#isRecentlyActive(lifecycle, mtimeMs);
+  }
+
+  #isRecentlyActive(lifecycle, mtimeMs) {
+    if (lifecycle !== "active") return false;
+    // A zero timeout explicitly disables expiry for unusually long-running tasks.
+    if (this.staleAfterMs === 0) return true;
+    return this.now() - mtimeMs <= this.staleAfterMs;
   }
 
   #readRange(filePath, start, end) {
@@ -159,9 +172,9 @@ class RolloutActivityTracker {
 }
 
 export class StatusService {
-  constructor(client) {
+  constructor(client, { runningStaleMs = DEFAULT_RUNNING_STALE_MS } = {}) {
     this.client = client;
-    this.activityTracker = new RolloutActivityTracker();
+    this.activityTracker = new RolloutActivityTracker({ staleAfterMs: runningStaleMs });
     this.status = {
       ok: false,
       stale: false,

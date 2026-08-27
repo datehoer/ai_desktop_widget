@@ -6,9 +6,10 @@ import { StatusService } from "./status-service.js";
 const port = Number(process.env.PORT || 8787);
 const host = process.env.HOST || "0.0.0.0";
 const refreshMs = Number(process.env.REFRESH_MS || 5_000);
+const runningStaleMs = Number(process.env.RUNNING_STALE_MS || 30 * 60 * 1000);
 
 const client = new AppServerClient();
-const statusService = new StatusService(client);
+const statusService = new StatusService(client, { runningStaleMs });
 
 client.on("stderr", (chunk) => {
   if (process.env.DEBUG_CODEX_BRIDGE) process.stderr.write(chunk);
