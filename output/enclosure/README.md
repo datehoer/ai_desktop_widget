@@ -11,6 +11,7 @@
 - `full-assembly-collision-check.scad`：完整外壳与底座的实体穿模检查
 - `front-black.stl`：可直接切片的黑色前框
 - `back-smoke-petg.stl`：可直接切片的烟灰透明后壳
+- `back-smoke-petg-v7-manifold.stl`：修复 ESP32 导轨止挡坏边后的推荐打印版本
 - `stand-black.stl`：可直接切片的黑色底座
 - `design-option-3.png`：选定的外观方向
 - `front-preview.png`、`back-preview.png`、`stand-preview.png`：OpenSCAD 实体渲染预览
@@ -37,6 +38,7 @@
 - 后板 2.2 mm，侧壁 2.4 mm
 - 与前框装配后的总厚度约 34.8 mm
 - ESP32 采用侧边导轨和底部止挡定位
+- v7 将底部止挡与两侧导轨改为 0.4 mm 实体搭接，消除两条非流形坏边，不占用 PCB 有效空间
 - 两侧理线柱让 8 根 80 mm 母对母杜邦线形成平缓 U 形回路
 - 后背板下方中央 USB-C 开口约 9.8 × 5.2 mm，中心距机身底边 10 mm
 - 背面有三条通风孔、RST/BOOT 访问孔和四个 M2 螺丝孔

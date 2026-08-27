@@ -93,6 +93,7 @@ esp_rail_w = 2;
 esp_rail_projection = 3.6;
 esp_rail_clearance = 0.5;
 esp_bottom_stop_h = 2;
+esp_stop_overlap = 0.4;              // solid overlap avoids edge-only non-manifold joins
 cable_guide_d = 3.5;
 cable_guide_projection = 3.2;
 
@@ -239,14 +240,18 @@ module esp_tray_and_guides() {
     // Two side guides; deliberately loose for FDM tolerance.
     for (x = [-esp_w/2 - esp_side_clearance - esp_rail_w,
                esp_w/2 + esp_side_clearance])
-        translate([x, rail_y0, rail_z])
-            cube([esp_rail_w, esp_h, esp_rail_projection]);
+        translate([x, rail_y0-esp_stop_overlap, rail_z])
+            cube([esp_rail_w,
+                  esp_h+esp_stop_overlap,
+                  esp_rail_projection]);
 
-    // Bottom stop leaves the USB-C connector centred in the bottom opening.
-    translate([-esp_w/2-esp_side_clearance,
+    // Extend through both rails and overlap them in Y. The previous version
+    // only touched each rail along one vertical edge, creating two bad edges.
+    // The board-facing stop plane remains at rail_y0, so usable space is unchanged.
+    translate([-esp_w/2-esp_side_clearance-esp_rail_w,
                rail_y0-esp_bottom_stop_h,
                rail_z])
-        cube([esp_w+2*esp_side_clearance,
+        cube([esp_w+2*esp_side_clearance+2*esp_rail_w,
               esp_bottom_stop_h,
               esp_rail_projection]);
 
