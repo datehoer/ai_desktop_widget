@@ -2,6 +2,8 @@
 
 用 ESP32-S3 NANO 和 1.54 英寸 ST7789 TFT 制作的桌面 Codex 状态屏。
 
+![Codex Usage Widget 完整成品效果与温湿度界面](output/enclosure/codex-widget-complete-ui-v1.png)
+
 屏幕显示：
 
 - Codex 周额度使用比例
@@ -9,6 +11,7 @@
 - 可用 reset credits
 - 当前正在运行的 Codex 任务数量
 - 最多两个真实任务标题，支持常用简体中文
+- 米家 `LYWSD03MMC` 的温度和湿度
 - 当前时间、Wi-Fi 信号强度和数据状态（`LIVE` / `STALE`）
 - 内置 Wi-Fi 配网页面，无需为了更换网络或 Mac 地址重新烧录
 
@@ -47,6 +50,7 @@ Codex CLI 安装和登录方式请参考 [OpenAI Codex CLI 官方说明](https:/
 - 母对母杜邦线 8 根
 - 支持数据传输的 USB Type-C 线
 - 400 孔面包板，可选；首轮测试可以直接用母对母线连接
+- 米家 `LYWSD03MMC` BLE 温湿度计，可选；无需额外接线
 
 > 本项目的引脚和 Flash 设置是针对上述已验证硬件。若屏幕驱动、分辨率、ESP32 型号或 Flash 容量不同，需要调整 `firmware/platformio.ini`。
 
@@ -391,9 +395,11 @@ uv run platformio device monitor \
 | `CREDITS` | 可用 reset credits；接口未提供时显示 `--` |
 | `RUNNING` | 当前未完成的 Codex 任务数量 |
 | 任务列表 | 最多两个真实任务标题，过长时显示 `...` |
-| 底部 | Wi-Fi RSSI 和 `LIVE` / `STALE` |
+| 底部 | Wi-Fi RSSI、BLE 温湿度和 `LIVE` / `STALE` |
 
 `LIVE` 表示最近一次桥接数据有效。`STALE` 表示当前请求失败，但屏幕仍保留上一次成功数据。只有设备启动后从未成功取得数据时才显示 `NO DATA`。
+
+固件每分钟扫描一次附近信号最强的 `LYWSD03MMC`，短暂连接并读取温度、湿度和电池后立即断开，避免长期占用连接影响原有米家蓝牙网关。首次读取前底栏显示 `BLE...`；未找到设备时显示 `BLE --`，连接或读取失败时显示 `BLE ERR`。超过三分钟没有新读数时会保留最后一次数据并改为黄色。
 
 ## 十四、日常启动顺序
 

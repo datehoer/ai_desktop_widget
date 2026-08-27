@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "config_portal.h"
+#include "ble_thermometer.h"
 #include "device_config.h"
 
 namespace {
@@ -92,10 +93,32 @@ void drawHeader(bool online) {
 void drawFooter() {
   tft.fillRect(0, 216, 240, 24, kBackground);
   const bool wifiConnected = WiFi.status() == WL_CONNECTED;
-  tft.fillCircle(16, 228, 3, wifiConnected ? kGreen : kRed);
+  tft.fillCircle(12, 228, 3, wifiConnected ? kGreen : kRed);
   tft.setTextColor(kMuted, kBackground);
-  const String wifiText = wifiConnected ? "WiFi " + String(WiFi.RSSI()) + "dBm" : "WiFi OFF";
-  tft.drawString(wifiText, 25, 220, 2);
+  const String wifiText = wifiConnected ? String(WiFi.RSSI()) + "dB" : "OFF";
+  tft.drawString(wifiText, 20, 220, 2);
+
+  const BleThermometerReading thermometer = getBleThermometerReading();
+  String thermometerText;
+  uint16_t thermometerColor = kMuted;
+  if (thermometer.hasValue) {
+    thermometerText = String(thermometer.temperatureC, 1) + "C " +
+                      String(thermometer.humidityPercent) + "%";
+    const bool fresh = millis() - thermometer.updatedAtMs <= 180000;
+    thermometerColor = fresh ? TFT_WHITE : kAmber;
+  } else if (thermometer.state == BleThermometerState::kScanning ||
+             thermometer.state == BleThermometerState::kConnecting) {
+    thermometerText = "BLE...";
+  } else if (thermometer.state == BleThermometerState::kReadError) {
+    thermometerText = "BLE ERR";
+    thermometerColor = kAmber;
+  } else {
+    thermometerText = "BLE --";
+  }
+  tft.setTextDatum(TC_DATUM);
+  tft.setTextColor(thermometerColor, kBackground);
+  tft.drawString(thermometerText, 132, 220, 2);
+
   tft.setTextDatum(TR_DATUM);
   tft.setTextColor(bridgeHealthy ? kGreen : kAmber, kBackground);
   tft.drawString(bridgeHealthy ? "LIVE" : "STALE", 228, 220, 2);
@@ -304,6 +327,7 @@ void setup() {
   configTzTime(timezonePosixRule(widgetConfig.timezoneId), "pool.ntp.org", "time.cloudflare.com");
   fetchStatus();
   lastPollAt = millis();
+  startBleThermometer();
 }
 
 void loop() {
