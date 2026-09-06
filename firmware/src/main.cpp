@@ -5,6 +5,11 @@
 #include <U8g2_for_TFT_eSPI.h>
 #include <WiFi.h>
 #include <time.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
+
+#include "flip_clock.h"
 
 #include "config_portal.h"
 #include "ble_thermometer.h"
@@ -24,26 +29,14 @@ constexpr uint16_t kGraffitiTexture = 0x2104;
 constexpr uint16_t kGraffitiOutline = 0xD69A;
 constexpr uint16_t kGraffitiPink = 0xF9B0;
 constexpr uint16_t kGraffitiGreen = 0xA7E0;
-constexpr uint16_t kGraffitiFold = 0x2945;
 constexpr unsigned long kWifiConnectTimeoutMs = 15000;
+constexpr unsigned long kNoDataClockTimeoutMs = 30000;
 constexpr time_t kMinimumValidEpoch = 1609459200;  // 2021-01-01 UTC
-constexpr int kIdleCardX[] = {4, 61, 124, 181};
-constexpr int kIdleCardY = 9;
-constexpr int kIdleCardWidth = 55;
-constexpr int kIdleCardHeight = 191;
-
-constexpr uint8_t kDigitSegments[] = {
-    0b0111111,  // 0: A B C D E F
-    0b0000110,  // 1: B C
-    0b1011011,  // 2: A B D E G
-    0b1001111,  // 3: A B C D G
-    0b1100110,  // 4: B C F G
-    0b1101101,  // 5: A C D F G
-    0b1111101,  // 6: A C D E F G
-    0b0000111,  // 7: A B C
-    0b1111111,  // 8: A B C D E F G
-    0b1101111,  // 9: A B C D F G
-};
+constexpr int kIdleCardX[] = {4, 84, 164};
+constexpr int kIdleCardY = 30;
+constexpr int kIdleCardWidth = 72;
+constexpr int kIdleCardHeight = 152;
+constexpr int kIdleCardHalf = kIdleCardHeight / 2;
 
 enum class DisplayMode {
   kUnknown,
@@ -58,6 +51,7 @@ WidgetConfig widgetConfig;
 unsigned long lastPollAt = 0;
 unsigned long lastClockDrawAt = 0;
 unsigned long lastResetDrawAt = 0;
+unsigned long lastFreshStatusAt = 0;
 unsigned long configButtonPressedAt = 0;
 bool hasRenderedStatus = false;
 bool bridgeHealthy = false;
@@ -65,7 +59,24 @@ int64_t weeklyResetsAt = 0;
 DisplayMode displayMode = DisplayMode::kUnknown;
 int lastIdleHour = -1;
 int lastIdleMinute = -1;
+int lastIdleSecond = -1;
+TFT_eSprite clockOld(&tft);
+TFT_eSprite clockNext(&tft);
+TFT_eSprite clockFrame(&tft);
+bool clockBuffersReady = false;
+bool clockFlipActive = false;
+bool clockChanged[3] = {};
+unsigned long clockFlipStartedAt = 0;
+unsigned long clockFrameAt = 0;
 bool idleClockSceneDrawn = false;
+
+struct StatusResult {
+  JsonDocument document;
+  String error;
+};
+QueueHandle_t statusResults = nullptr;
+TaskHandle_t statusWorker = nullptr;
+bool statusRequestPending = false;
 
 uint16_t quotaColor(float usedPercent) {
   if (usedPercent >= 90) return kRed;
@@ -127,107 +138,129 @@ String clockText() {
   return String(buffer);
 }
 
-bool localClock(int &hour, int &minute) {
+bool localClock(int &hour, int &minute, int &second) {
+  const time_t now = time(nullptr);
+  if (now < kMinimumValidEpoch) return false;
   struct tm localTime;
-  if (!getLocalTime(&localTime, 10)) return false;
+  localtime_r(&now, &localTime);
   hour = localTime.tm_hour;
   minute = localTime.tm_min;
+  second = localTime.tm_sec;
   return true;
 }
 
-int clockDigit(int hour, int minute, int index) {
-  if (hour < 0 || minute < 0) return -1;
-  if (index == 0) return hour / 10;
-  if (index == 1) return hour % 10;
-  if (index == 2) return minute / 10;
-  return minute % 10;
+bool ensureClockBuffers() {
+  if (clockBuffersReady) return true;
+  clockBuffersReady = clockOld.createSprite(kIdleCardWidth * 3, kIdleCardHeight) &&
+                      clockNext.createSprite(kIdleCardWidth * 3, kIdleCardHeight) &&
+                      clockFrame.createSprite(kIdleCardWidth, kIdleCardHeight);
+  if (!clockBuffersReady) {
+    clockOld.deleteSprite();
+    clockNext.deleteSprite();
+    clockFrame.deleteSprite();
+  }
+  Serial.printf("[clock] HH:MM:SS flip buffers %s, duration %lums\n",
+                clockBuffersReady ? "ready" : "unavailable (static fallback)",
+                flip_clock::kDurationMs);
+  return clockBuffersReady;
 }
 
-uint16_t digitColor(int index) {
-  return index == 0 || index == 3 ? kGraffitiPink : kGraffitiGreen;
+template <typename Canvas>
+void drawPaintSegment(Canvas &canvas, int x, int y, int width, int height,
+                      uint16_t color) {
+  canvas.fillRoundRect(x - 1, y - 1, width + 2, height + 2, 3, kGraffitiOutline);
+  canvas.fillRoundRect(x, y, width, height, 2, color);
 }
 
-void drawPaintSegment(int x, int y, int width, int height, uint16_t color) {
-  const int radius = min(5, min(width, height) / 2);
-  tft.fillRoundRect(x - 2, y - 2, width + 4, height + 4, radius + 1,
-                    kGraffitiOutline);
-  tft.fillRoundRect(x, y, width, height, radius, color);
-}
-
-void drawGraffitiDigit(int cardX, int digit, uint16_t color) {
-  constexpr int top = 34;
-  constexpr int middle = 94;
-  constexpr int bottom = 154;
-  const int left = cardX + 10;
-  const int right = cardX + 34;
-
+template <typename Canvas>
+void drawGraffitiDigit(Canvas &canvas, int x, int y, int digit, uint16_t color) {
+  constexpr uint8_t segments[] = {0x3f, 0x06, 0x5b, 0x4f, 0x66,
+                                  0x6d, 0x7d, 0x07, 0x7f, 0x6f};
   if (digit == 1) {
-    // A centered, poster-like one reads better than the right-aligned LED form.
-    drawPaintSegment(cardX + 23, top + 3, 10, 116, color);
-    drawPaintSegment(cardX + 15, top + 9, 18, 9, color);
-    drawPaintSegment(cardX + 14, bottom - 4, 29, 9, color);
+    drawPaintSegment(canvas, x + 11, y + 2, 7, 98, color);
+    drawPaintSegment(canvas, x + 5, y + 7, 13, 6, color);
+    drawPaintSegment(canvas, x + 5, y + 96, 20, 6, color);
   } else {
-    const uint8_t segments = digit < 0 ? 0b1000000 : kDigitSegments[digit];
-    if (segments & 0b0000001) drawPaintSegment(left + 3, top, 27, 10, color);       // A
-    if (segments & 0b0000010) drawPaintSegment(right, top + 5, 10, 54, color);      // B
-    if (segments & 0b0000100) drawPaintSegment(right, middle + 5, 10, 54, color);   // C
-    if (segments & 0b0001000) drawPaintSegment(left + 3, bottom, 27, 10, color);    // D
-    if (segments & 0b0010000) drawPaintSegment(left, middle + 5, 10, 54, color);    // E
-    if (segments & 0b0100000) drawPaintSegment(left, top + 5, 10, 54, color);       // F
-    if (segments & 0b1000000) drawPaintSegment(left + 3, middle, 27, 10, color);    // G
+    const uint8_t mask = digit < 0 ? 0x40 : segments[digit];
+    if (mask & 0x01) drawPaintSegment(canvas, x + 4, y, 20, 7, color);
+    if (mask & 0x02) drawPaintSegment(canvas, x + 21, y + 5, 6, 43, color);
+    if (mask & 0x04) drawPaintSegment(canvas, x + 21, y + 55, 6, 43, color);
+    if (mask & 0x08) drawPaintSegment(canvas, x + 4, y + 96, 20, 7, color);
+    if (mask & 0x10) drawPaintSegment(canvas, x + 1, y + 55, 6, 43, color);
+    if (mask & 0x20) drawPaintSegment(canvas, x + 1, y + 5, 6, 43, color);
+    if (mask & 0x40) drawPaintSegment(canvas, x + 4, y + 48, 20, 7, color);
   }
-
-  // Deterministic chips and scratches make the bright paint look worn without
-  // storing a large bitmap in flash.
-  for (int index = 0; index < 23; index++) {
-    const int px = cardX + 8 + ((index * 17 + max(0, digit) * 11) % 39);
-    const int py = top + ((index * 29 + max(0, digit) * 7) % 130);
-    tft.drawFastHLine(px, py, 2 + index % 4, kGraffitiPanel);
+  for (int mark = 0; mark < 12; ++mark) {
+    canvas.drawFastHLine(x + 3 + (mark * 17 + max(0, digit) * 3) % 22,
+                         y + 3 + (mark * 29) % 98, 2, kGraffitiPanel);
   }
-
   if (digit >= 0) {
-    for (int drip = 0; drip < 4; drip++) {
-      const int px = cardX + 13 + ((drip * 13 + digit * 5) % 31);
-      const int length = 5 + ((drip * 7 + digit * 3) % 18);
-      tft.drawFastVLine(px, 167, length, color);
-      tft.fillCircle(px, 167 + length, 1, color);
+    for (int drip = 0; drip < 2; ++drip) {
+      const int px = x + 5 + (digit * 3 + drip * 11) % 19;
+      canvas.drawFastVLine(px, y + 105, 4 + (digit + drip * 3) % 9, color);
     }
   }
 }
 
-void drawGraffitiCard(int index, int digit) {
-  const int x = kIdleCardX[index];
-  tft.fillRoundRect(x + 2, kIdleCardY + 3, kIdleCardWidth, kIdleCardHeight, 6,
-                    TFT_BLACK);
-  tft.fillRoundRect(x, kIdleCardY, kIdleCardWidth, kIdleCardHeight, 6,
-                    kGraffitiPanel);
-  tft.drawRoundRect(x, kIdleCardY, kIdleCardWidth, kIdleCardHeight, 6,
-                    kGraffitiPanelEdge);
-
-  for (int mark = 0; mark < 34; mark++) {
-    const int px = x + 3 + ((mark * 19 + index * 7) % (kIdleCardWidth - 7));
-    const int py = kIdleCardY + 4 + ((mark * 37 + index * 13) % (kIdleCardHeight - 9));
-    if (mark % 3 == 0) {
-      tft.drawFastHLine(px, py, 2 + mark % 7, kGraffitiTexture);
-    } else {
-      tft.drawPixel(px, py, kGraffitiPanelEdge);
-    }
+template <typename Canvas>
+void drawGraffitiCard(Canvas &canvas, int x, int y, int group, int value) {
+  canvas.fillRect(x, y, kIdleCardWidth, kIdleCardHeight, kGraffitiBackground);
+  canvas.fillRoundRect(x, y, kIdleCardWidth, kIdleCardHeight, 5, kGraffitiPanel);
+  canvas.drawRoundRect(x, y, kIdleCardWidth, kIdleCardHeight, 5, kGraffitiPanelEdge);
+  for (int mark = 0; mark < 24; ++mark) {
+    canvas.drawPixel(x + 3 + (mark * 19 + group * 7) % 65,
+                     y + 3 + (mark * 37) % 145, kGraffitiTexture);
   }
-
-  drawGraffitiDigit(x, digit, digitColor(index));
-
-  const int seam = kIdleCardY + 96;
-  tft.drawFastHLine(x + 2, seam, kIdleCardWidth - 4, TFT_BLACK);
-  tft.drawFastHLine(x + 5, seam + 2, kIdleCardWidth - 10, kGraffitiPanelEdge);
-  tft.fillCircle(x + 3, seam, 2, kGraffitiPanelEdge);
-  tft.fillCircle(x + kIdleCardWidth - 4, seam, 2, kGraffitiPanelEdge);
+  const uint16_t color = group == 1 ? kGraffitiGreen : kGraffitiPink;
+  drawGraffitiDigit(canvas, x + 5, y + 24, value < 0 ? -1 : value / 10, color);
+  drawGraffitiDigit(canvas, x + 39, y + 24, value < 0 ? -1 : value % 10, color);
+  canvas.drawFastHLine(x + 2, y + kIdleCardHalf - 1, kIdleCardWidth - 4, TFT_BLACK);
+  canvas.drawFastHLine(x + 2, y + kIdleCardHalf, kIdleCardWidth - 4, TFT_BLACK);
+  canvas.drawFastHLine(x + 5, y + kIdleCardHalf + 1, kIdleCardWidth - 10,
+                       kGraffitiPanelEdge);
+  canvas.fillCircle(x + 2, y + kIdleCardHalf, 2, kGraffitiOutline);
+  canvas.fillCircle(x + kIdleCardWidth - 3, y + kIdleCardHalf, 2, kGraffitiOutline);
 }
 
 void drawGraffitiColon() {
-  tft.fillCircle(120, 81, 4, kGraffitiOutline);
-  tft.fillCircle(120, 124, 4, kGraffitiOutline);
-  tft.drawFastVLine(120, 128, 12, kGraffitiOutline);
-  tft.fillCircle(120, 141, 1, kGraffitiOutline);
+  for (int x : {80, 160}) {
+    tft.fillCircle(x, 92, 2, kGraffitiOutline);
+    tft.fillCircle(x, 120, 2, kGraffitiOutline);
+  }
+}
+
+// Sprite pixels are stored byte-swapped by TFT_eSPI. Compose the entire card
+// offscreen, including the stationary halves, and transfer it once per frame.
+void drawClockFlipFrame(unsigned long elapsed) {
+  const flip_clock::Frame motion = flip_clock::frame(elapsed, kIdleCardHalf);
+  auto *oldPixels = static_cast<uint16_t *>(clockOld.getPointer());
+  auto *nextPixels = static_cast<uint16_t *>(clockNext.getPointer());
+  auto *pixels = static_cast<uint16_t *>(clockFrame.getPointer());
+  constexpr int stride = kIdleCardWidth * 3;
+  for (int group = 0; group < 3; ++group) {
+    if (!clockChanged[group]) continue;
+    for (int y = 0; y < kIdleCardHeight; ++y) {
+      const auto row = flip_clock::row(motion, y, kIdleCardHalf);
+      const auto *source = row.oldPage ? oldPixels : nextPixels;
+      for (int x = 0; x < kIdleCardWidth; ++x) {
+        uint16_t pixel = source[row.sourceY * stride + group * kIdleCardWidth + x];
+        if (row.moving) pixel = flip_clock::shadeSwapped565(pixel, motion.light);
+        pixels[y * kIdleCardWidth + x] = pixel;
+      }
+    }
+    // The leading edge travels toward / away from the hinge, following the
+    // projected digit itself instead of covering it with an opaque band.
+    if (motion.height > 0 && elapsed < flip_clock::kDurationMs) {
+      const int edge = motion.falling ? kIdleCardHalf + motion.height - 1
+                                      : kIdleCardHalf - motion.height;
+      clockFrame.drawFastHLine(3, edge, kIdleCardWidth - 6, kGraffitiOutline);
+    }
+    clockFrame.drawFastHLine(2, kIdleCardHalf - 1, kIdleCardWidth - 4, TFT_BLACK);
+    clockFrame.drawFastHLine(2, kIdleCardHalf, kIdleCardWidth - 4, TFT_BLACK);
+    clockFrame.fillCircle(2, kIdleCardHalf, 2, kGraffitiOutline);
+    clockFrame.fillCircle(kIdleCardWidth - 3, kIdleCardHalf, 2, kGraffitiOutline);
+    clockFrame.pushSprite(kIdleCardX[group], kIdleCardY);
+  }
 }
 
 void drawIdleClockFooter() {
@@ -246,7 +279,7 @@ void drawIdleClockFooter() {
 
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(kGraffitiPanelEdge, kGraffitiBackground);
-  tft.drawString("IDLE", 12, 218, 2);
+  tft.drawString(bridgeHealthy ? "IDLE" : "CLOCK", 12, 218, 2);
   tft.setTextColor(kGraffitiOutline, kGraffitiBackground);
   tft.drawString(environment, 55, 218, 2);
   tft.fillCircle(188, 226, 3, bridgeHealthy ? kGreen : kAmber);
@@ -255,73 +288,83 @@ void drawIdleClockFooter() {
   tft.setTextDatum(TL_DATUM);
 }
 
-void drawIdleClockScene(int hour, int minute) {
+void drawIdleClockScene(int hour, int minute, int second) {
   tft.fillScreen(kGraffitiBackground);
-  for (int index = 0; index < 4; index++) {
-    drawGraffitiCard(index, clockDigit(hour, minute, index));
+  const int values[] = {hour, minute, second};
+  const char *labels[] = {"HOUR", "MIN", "SEC"};
+  tft.setTextDatum(TC_DATUM);
+  tft.setTextColor(kGraffitiOutline, kGraffitiBackground);
+  for (int group = 0; group < 3; ++group) {
+    drawGraffitiCard(tft, kIdleCardX[group], kIdleCardY, group, values[group]);
+    tft.drawString(labels[group], kIdleCardX[group] + kIdleCardWidth / 2, 9, 2);
   }
   drawGraffitiColon();
   drawIdleClockFooter();
 }
 
-void animateIdleClockFlip(int hour, int minute) {
-  constexpr int seam = kIdleCardY + 96;
-  bool changed[4];
-  for (int index = 0; index < 4; index++) {
-    changed[index] = clockDigit(lastIdleHour, lastIdleMinute, index) !=
-                     clockDigit(hour, minute, index);
-  }
-
-  for (int bandHeight = 8; bandHeight <= 72; bandHeight += 16) {
-    for (int index = 0; index < 4; index++) {
-      if (!changed[index]) continue;
-      drawGraffitiCard(index, clockDigit(lastIdleHour, lastIdleMinute, index));
-      tft.fillRect(kIdleCardX[index] + 2, seam - bandHeight / 2,
-                   kIdleCardWidth - 4, bandHeight, kGraffitiFold);
-      tft.drawFastHLine(kIdleCardX[index] + 2, seam,
-                        kIdleCardWidth - 4, TFT_BLACK);
-    }
-    delay(25);
-  }
-
-  for (int bandHeight = 72; bandHeight >= 8; bandHeight -= 16) {
-    for (int index = 0; index < 4; index++) {
-      if (!changed[index]) continue;
-      drawGraffitiCard(index, clockDigit(hour, minute, index));
-      tft.fillRect(kIdleCardX[index] + 2, seam - bandHeight / 2,
-                   kIdleCardWidth - 4, bandHeight, kGraffitiFold);
-      tft.drawFastHLine(kIdleCardX[index] + 2, seam,
-                        kIdleCardWidth - 4, TFT_BLACK);
-    }
-    delay(25);
-  }
-
-  for (int index = 0; index < 4; index++) {
-    if (changed[index]) drawGraffitiCard(index, clockDigit(hour, minute, index));
-  }
-  drawGraffitiColon();
-}
-
 void updateIdleClock(bool forceRedraw) {
-  int hour = -1;
-  int minute = -1;
-  const bool hasTime = localClock(hour, minute);
-
+  int hour = -1, minute = -1, second = -1;
+  const bool hasTime = localClock(hour, minute, second);
   if (forceRedraw || !idleClockSceneDrawn) {
-    drawIdleClockScene(hasTime ? hour : -1, hasTime ? minute : -1);
+    clockFlipActive = false;
+    ensureClockBuffers();
+    drawIdleClockScene(hour, minute, second);
     idleClockSceneDrawn = true;
-  } else if (hasTime && (lastIdleHour < 0 || lastIdleMinute < 0)) {
-    for (int index = 0; index < 4; index++) {
-      drawGraffitiCard(index, clockDigit(hour, minute, index));
+  } else if (hasTime && (hour != lastIdleHour || minute != lastIdleMinute ||
+                         second != lastIdleSecond)) {
+    if (clockFlipActive) drawClockFlipFrame(flip_clock::kDurationMs);
+    const int previous[] = {lastIdleHour, lastIdleMinute, lastIdleSecond};
+    const int next[] = {hour, minute, second};
+    // First sync and time corrections snap to the actual time. Never replay
+    // stale seconds after an outage or continue an animation from old buffers.
+    clockFlipActive = clockBuffersReady &&
+        flip_clock::isNextSecond(lastIdleHour, lastIdleMinute, lastIdleSecond,
+                                 hour, minute, second);
+    for (int group = 0; group < 3; ++group) {
+      clockChanged[group] = previous[group] != next[group];
+      if (!clockChanged[group]) continue;
+      if (clockFlipActive) {
+        drawGraffitiCard(clockOld, group * kIdleCardWidth, 0, group, previous[group]);
+        drawGraffitiCard(clockNext, group * kIdleCardWidth, 0, group, next[group]);
+      } else {
+        drawGraffitiCard(tft, kIdleCardX[group], kIdleCardY, group, next[group]);
+      }
     }
-    drawGraffitiColon();
-  } else if (hasTime && (hour != lastIdleHour || minute != lastIdleMinute)) {
-    animateIdleClockFlip(hour, minute);
+    clockFlipStartedAt = millis();
+    clockFrameAt = millis() - 25;
   }
-
   if (hasTime) {
     lastIdleHour = hour;
     lastIdleMinute = minute;
+    lastIdleSecond = second;
+  }
+  if (clockFlipActive && millis() - clockFrameAt >= 25) {
+    clockFrameAt = millis();
+    const unsigned long elapsed = millis() - clockFlipStartedAt;
+    drawClockFlipFrame(elapsed);
+    if (elapsed >= flip_clock::kDurationMs) clockFlipActive = false;
+  }
+}
+
+void showIdleClock() {
+  if (displayMode != DisplayMode::kIdleClock) {
+    displayMode = DisplayMode::kIdleClock;
+    lastIdleHour = -1;
+    lastIdleMinute = -1;
+    lastIdleSecond = -1;
+    idleClockSceneDrawn = false;
+    Serial.println(bridgeHealthy ? "[display] idle clock" : "[display] offline clock");
+    updateIdleClock(true);
+  } else {
+    drawIdleClockFooter();
+  }
+}
+
+void updateNoDataTimeout() {
+  // Use a monotonic timer: NTP corrections must not affect the fallback.
+  // A configured 60-second poll interval is not itself a connection failure.
+  if (!bridgeHealthy && millis() - lastFreshStatusAt >= kNoDataClockTimeoutMs) {
+    if (displayMode != DisplayMode::kIdleClock) showIdleClock();
   }
 }
 
@@ -395,24 +438,16 @@ void drawStatus(JsonDocument &doc) {
   const int resetCredits = doc["resetCredits"] | -1;
   const int runningCount = doc["runningCount"] | 0;
 
-  const bool wasBridgeHealthy = bridgeHealthy;
-  bridgeHealthy = doc["ok"] | false;
+  bridgeHealthy = true;
+  lastFreshStatusAt = millis();
   hasRenderedStatus = true;
 
   if (runningCount == 0) {
-    const bool enteringIdleClock = displayMode != DisplayMode::kIdleClock;
-    displayMode = DisplayMode::kIdleClock;
-    if (enteringIdleClock) {
-      lastIdleHour = -1;
-      lastIdleMinute = -1;
-      idleClockSceneDrawn = false;
-      updateIdleClock(true);
-    } else if (wasBridgeHealthy != bridgeHealthy) {
-      drawIdleClockFooter();
-    }
+    showIdleClock();
     return;
   }
 
+  if (displayMode != DisplayMode::kStatus) Serial.println("[display] live status");
   displayMode = DisplayMode::kStatus;
   drawHeader(bridgeHealthy);
   tft.fillRect(0, 35, 240, 181, kBackground);
@@ -480,34 +515,77 @@ void markConnectionStale(const String &reason) {
   }
 }
 
-bool fetchStatus() {
+// Network I/O owns no display state. The main loop alone renders, even when
+// a connection or response takes several seconds to time out.
+void fetchStatusInBackground(StatusResult &result, const String &url) {
   if (WiFi.status() != WL_CONNECTED) {
-    markConnectionStale("Wi-Fi disconnected");
-    return false;
+    result.error = "Wi-Fi disconnected";
+    return;
   }
-
   HTTPClient http;
+  http.setConnectTimeout(4000);
   http.setTimeout(4000);
-  if (!http.begin(widgetConfig.bridgeUrl)) {
-    markConnectionStale("Invalid bridge URL");
-    return false;
+  if (!http.begin(url)) {
+    result.error = "Invalid bridge URL";
+    return;
   }
   const int code = http.GET();
   if (code != HTTP_CODE_OK) {
     http.end();
-    markConnectionStale("HTTP " + String(code));
-    return false;
+    result.error = "HTTP " + String(code);
+    return;
   }
-
-  JsonDocument doc;
-  const DeserializationError error = deserializeJson(doc, http.getStream());
+  const DeserializationError error = deserializeJson(result.document, http.getStream());
   http.end();
   if (error) {
-    markConnectionStale("Invalid JSON");
-    return false;
+    result.error = "Invalid JSON";
+    return;
   }
-  drawStatus(doc);
-  return true;
+  JsonDocument &doc = result.document;
+  if (!(doc["ok"] | false) || (doc["stale"] | false)) {
+    result.error = "Bridge data unavailable";
+    return;
+  }
+  if (!doc["runningCount"].is<int>() || doc["runningCount"].as<int>() < 0) {
+    result.error = "Invalid status payload";
+  }
+}
+
+void statusWorkerLoop(void *) {
+  // Configuration changes reboot the device; take a private immutable copy.
+  const String url = widgetConfig.bridgeUrl;
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    auto *result = new StatusResult;
+    fetchStatusInBackground(*result, url);
+    xQueueSend(statusResults, &result, portMAX_DELAY);
+  }
+}
+
+void fetchStatus() {
+  if (statusWorker == nullptr || statusRequestPending) return;
+  statusRequestPending = true;
+  xTaskNotifyGive(statusWorker);
+}
+
+void receiveStatus() {
+  StatusResult *result = nullptr;
+  if (statusResults == nullptr || xQueueReceive(statusResults, &result, 0) != pdTRUE) return;
+  statusRequestPending = false;
+  if (result->error.isEmpty()) drawStatus(result->document);
+  else markConnectionStale(result->error);
+  delete result;
+}
+
+void startStatusWorker() {
+  statusResults = xQueueCreate(1, sizeof(StatusResult *));
+  if (statusResults != nullptr &&
+      xTaskCreate(statusWorkerLoop, "bridge-status", 8192, nullptr, 1,
+                  &statusWorker) == pdPASS) return;
+  if (statusResults != nullptr) vQueueDelete(statusResults);
+  statusResults = nullptr;
+  statusWorker = nullptr;
+  markConnectionStale("Status worker unavailable");
 }
 
 bool connectWifi() {
@@ -564,6 +642,7 @@ void setup() {
   tft.setRotation(0);
   tft.fillScreen(kBackground);
   tft.setTextWrap(false);
+  ensureClockBuffers();
   utf8Font.begin(tft);
   utf8Font.setFontMode(1);
   utf8Font.setFontDirection(0);
@@ -591,6 +670,8 @@ void setup() {
   Serial.printf("[config] hold BOOT for %lus to reconfigure\n", kConfigButtonHoldMs / 1000);
   startLanConfigServer(widgetConfig);
   configTzTime(timezonePosixRule(widgetConfig.timezoneId), "pool.ntp.org", "time.cloudflare.com");
+  lastFreshStatusAt = millis();
+  startStatusWorker();
   fetchStatus();
   lastPollAt = millis();
   startBleThermometer();
@@ -599,6 +680,8 @@ void setup() {
 void loop() {
   handleLanConfigServer();
   handleConfigButton();
+  receiveStatus();
+  updateNoDataTimeout();
 
   const unsigned long pollIntervalMs = widgetConfig.pollIntervalSeconds * 1000UL;
   if (millis() - lastPollAt >= pollIntervalMs) {
@@ -611,10 +694,11 @@ void loop() {
     }
   }
 
+  updateNoDataTimeout();
+  if (displayMode == DisplayMode::kIdleClock) updateIdleClock(false);
   if (millis() - lastClockDrawAt >= 1000) {
     lastClockDrawAt = millis();
     if (displayMode == DisplayMode::kIdleClock) {
-      updateIdleClock(false);
       drawIdleClockFooter();
     } else if (displayMode == DisplayMode::kStatus) {
       drawHeader(bridgeHealthy);
@@ -626,5 +710,5 @@ void loop() {
     lastResetDrawAt = millis();
     drawResetCountdown();
   }
-  delay(250);
+  delay(displayMode == DisplayMode::kIdleClock ? 5 : 50);
 }

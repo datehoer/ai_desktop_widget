@@ -1,30 +1,47 @@
 # Codex Usage Widget
 
-用 ESP32-S3 NANO 和 1.54 英寸 ST7789 TFT 制作的桌面 Codex 状态屏。
+**English** | [简体中文](README.zh-CN.md)
 
-![Codex Usage Widget 朋克涂鸦翻页钟空闲界面](output/enclosure/codex-widget-graffiti-clock-v1.png)
+A desktop Codex status display built with an ESP32-S3 NANO and a 1.54-inch ST7789 TFT. Track weekly usage, active tasks, and room conditions; enjoy a graffiti-style **HH:MM:SS flip clock** when your tasks are done.
 
-没有运行中的 Codex 任务时，屏幕自动切换为朋克涂鸦翻页钟；任务开始后恢复额度和任务状态面板。
+![Codex Usage Widget with the three-pair HH:MM:SS flip clock](output/enclosure/codex-widget-graffiti-clock-v2.png)
 
-![Codex Usage Widget 任务状态与温湿度界面](output/enclosure/codex-widget-complete-ui-v1.png)
+*AI-generated product concept render of the updated clock interface. The animation preview below is generated from the firmware drawing code; neither image is a photograph of the running device.*
 
-屏幕显示：
+![Flip animation generated from the firmware drawing code](output/clock/flip-clock-preview.gif)
 
-- Codex 周额度使用比例
-- 距离周额度重置的剩余时间
-- 可用 reset credits
-- 当前正在运行的 Codex 任务数量
-- 最多两个真实任务标题，支持常用简体中文
-- 米家 `LYWSD03MMC` 的温度和湿度
-- 当前时间、Wi-Fi 信号强度和数据状态（`LIVE` / `STALE`）
-- 没有运行中的任务时自动切换为朋克涂鸦翻页钟
-- 内置 Wi-Fi 配网页面，无需为了更换网络或 Mac 地址重新烧录
+The seconds card flips every second. The hour and minute cards join in when their values change. Each flip takes about **650 ms**: the old upper half folds toward the hinge, then the new lower half unfolds with changing shading. Frames are composed in memory before reaching the display. Bridge requests run in a background task so HTTP timeouts do not freeze the clock.
 
-本文按全新 macOS 环境编写，从硬件接线到首次显示数据均可逐步复现。项目目前在 ESP32-S3 NANO（16MB Flash、8MB PSRAM）和 240×240 ST7789 SPI 屏幕上验证通过。
+![Task status and BLE room readings, product concept render](output/enclosure/codex-widget-complete-ui-v1.png)
 
-## 工作原理
+## Features
 
-ESP32 不直接登录 Codex，也不保存 ChatGPT 凭证。Mac 上的 Node.js 桥接服务启动本机 `codex app-server`，把屏幕需要的信息整理为一个局域网 HTTP 接口；ESP32 每 5 秒获取一次。
+- Weekly Codex usage, reset countdown, and available reset credits.
+- Active task count and up to two real task titles, including common Simplified Chinese characters.
+- Three paired flip cards for hours, minutes, and seconds, with pink and lime graffiti numerals.
+- Automatic switching between the task dashboard, idle clock, and offline clock.
+- Temperature and humidity from an optional Xiaomi `LYWSD03MMC` BLE thermometer.
+- Wi-Fi setup and later configuration from a browser, with settings saved in NVS.
+- A macOS background service that waits for external project volumes and the configured proxy at login.
+- Printable enclosure files and a local 3D viewer with mesh diagnostics, assembly inspection, and collision simulation.
+
+The hardware has been tested with an **ESP32-S3 NANO with 16 MB flash and 8 MB PSRAM**, and a **240×240 ST7789 SPI display**. The setup guide below targets macOS.
+
+## Recent changes
+
+| Area | Current behavior |
+| --- | --- |
+| Flip clock | HH:MM:SS replaces the four-digit HH:MM layout; actual half-page projection replaces the old covering-band transition. |
+| Rendering | A 650 ms animation updates changed cards from offscreen buffers; HTTP requests execute separately from rendering. |
+| Timekeeping | Minute, hour, and midnight rollovers flip together. Initial NTP sync and clock jumps snap to the current time without replaying missed seconds. |
+| Offline fallback | After at least 30 seconds without fresh data and a confirmed request failure, the display switches to `CLOCK / STALE`. Invalid or stale HTTP 200 payloads do not count as recovery. |
+| Task tracking | Unfinished rollout activity expires after 30 minutes without file updates by default, preventing abandoned tasks from remaining active indefinitely. |
+| Reset countdown | Refreshes independently after time synchronization instead of waiting for the next full status render. |
+| Enclosure and viewer | The v7 rear shell repairs non-manifold rail stops; the viewer checks mesh topology and provides an aligned front/rear shell inspection with electronics proxies. |
+
+## How it works
+
+The ESP32 does not sign in to Codex or store ChatGPT credentials. A Node.js bridge on the Mac starts a local `codex app-server`, reads account and task information, and exposes a compact LAN HTTP endpoint. The device polls every **5 seconds by default**, configurable from 2 to 60 seconds.
 
 ```mermaid
 flowchart LR
@@ -32,177 +49,167 @@ flowchart LR
     B --> C["Mac Node.js bridge :8787"]
     C -->|"Wi-Fi / JSON"| D["ESP32-S3 NANO"]
     D -->|"SPI"| E["ST7789 240×240 TFT"]
+    F["LYWSD03MMC thermometer"] -->|"BLE"| D
 ```
 
-桥接服务读取：
+The bridge uses `account/rateLimits/read` for quota windows, reset times, and credits, and `thread/list` for task metadata and local rollout paths. It reads rollout lifecycle events to determine whether a task is still running. The HTTP endpoint serves its latest snapshot immediately while refreshing Codex data in the background.
 
-- `account/rateLimits/read`：额度窗口、重置时间和 reset credits
-- `thread/list`：任务标题、更新时间与本地 rollout 文件
-- rollout 生命周期事件：判断任务最后处于运行还是完成状态
+References: [Codex CLI documentation](https://learn.chatgpt.com/docs/codex/cli) and [Codex App Server documentation](https://learn.chatgpt.com/docs/app-server).
 
-Codex CLI 安装和登录方式请参考 [OpenAI Codex CLI 官方说明](https://learn.chatgpt.com/docs/codex/cli)；本项目使用的本地协议见 [Codex App Server 官方说明](https://learn.chatgpt.com/docs/app-server)。
+## Display modes
 
-## 一、准备材料
-
-### 硬件
-
-- ESP32-S3 NANO 开发板，已焊接排针
-- 1.54 英寸彩色 TFT
-  - 驱动芯片：ST7789
-  - 接口：SPI
-  - 分辨率：240×240
-  - 已焊接排针
-- 母对母杜邦线 8 根
-- 支持数据传输的 USB Type-C 线
-- 400 孔面包板，可选；首轮测试可以直接用母对母线连接
-- 米家 `LYWSD03MMC` BLE 温湿度计，可选；无需额外接线
-
-> 本项目的引脚和 Flash 设置是针对上述已验证硬件。若屏幕驱动、分辨率、ESP32 型号或 Flash 容量不同，需要调整 `firmware/platformio.ini`。
-
-### 软件
-
-- macOS
-- Git
-- Node.js 20 或更高版本；项目 `.nvmrc` 推荐 Node.js 22
-- npm
-- Python 3.12
-- [uv](https://docs.astral.sh/uv/)
-- Codex CLI，并已完成 ChatGPT 登录
-- 一个 2.4 GHz Wi-Fi；Mac 和 ESP32 必须能够在局域网内互相访问
-
-## 二、断电接线
-
-接线时不要连接 USB。确认全部线序后，再把 ESP32 接到电脑。
-
-![ESP32-S3 NANO 与 ST7789 接线图](output/wiring/esp32-st7789-wiring-final.png)
-
-| ST7789 TFT | ESP32-S3 NANO | 功能 |
+| Display | Trigger | Meaning |
 | --- | --- | --- |
-| `BLK` | `GPIO7` | 背光控制 |
-| `CS` | `GPIO10` | SPI 片选 |
-| `DC` | `GPIO9` | 数据/命令选择；板上印作 `09` |
-| `RES` | `GPIO8` | 屏幕复位；板上印作 `08` |
-| `SDA` | `GPIO11` | SPI MOSI，不是 I²C SDA |
-| `SCL` | `GPIO12` | SPI 时钟 |
-| `VCC` | `3V3` | 3.3V 供电 |
-| `GND` | `GND` | 地 |
+| Task dashboard · `LIVE` | Valid fresh status with `runningCount > 0` | Shows quota and active tasks. |
+| Flip clock · `IDLE / LIVE` | Valid fresh status with `runningCount == 0` | No task is currently executing; the bridge is connected. |
+| Existing display · `STALE` | A request fails or returns invalid/stale data | Temporarily retains the previous display while retrying. |
+| Flip clock · `CLOCK / STALE` | No fresh status for at least 30 seconds, with failure confirmed | Offline fallback; time and BLE readings remain available after initial clock sync. |
+| `NO DATA` | No successful status received yet | Waits for the bridge; persistent failure leads to the offline clock. |
+| `SETUP MODE` | Missing configuration, startup Wi-Fi failure, or holding BOOT for 4 seconds | Opens the configuration hotspot. |
 
-接线注意事项：
+**`IDLE` means idle, not disconnected.** A completed assistant reply can leave no running task and switch the display to the clock. A new running task brings back the dashboard on a subsequent refresh. Bridge refresh and device polling each have their own interval, so a change is not instantaneous.
 
-- `VCC` 只接 `3V3`，首轮测试不要接 `5V`。
-- 所有线插到底，轻拉确认没有松动。
-- TFT 背面标记顺序可能与观看方向相反，按丝印文字逐个确认。
-- `SDA` 和 `SCL` 在这块屏幕上属于 SPI，不代表必须使用 I²C 引脚。
-- 杜邦线颜色没有电气意义，只需保证两端对应正确。
+The 30-second fallback uses a monotonic timer. Merely waiting for a configured 60-second poll does not count as a failure. Detection can occur later than 30 seconds if a request is still pending or the next poll has not started. Responses with `ok=false`, `stale=true`, or an invalid task count cannot revive stale tasks.
 
-## 三、取得项目代码
+NTP establishes the clock initially. After that, it keeps time if connectivity is lost; before initial sync, the clock shows placeholders. Time jumps are applied directly. The existing startup Wi-Fi recovery flow still enters setup mode if the configured network cannot be reached.
 
-如果项目已经发布到 Git 仓库：
+## 1. Requirements
+
+### Hardware
+
+- ESP32-S3 NANO with soldered headers, 16 MB flash, and 8 MB PSRAM.
+- 1.54-inch TFT with ST7789 driver, SPI interface, 240×240 resolution, and soldered headers.
+- Eight female-to-female jumper wires.
+- A USB-C cable that supports data transfer.
+- Optional breadboard; direct jumper connections work for initial testing.
+- Optional Xiaomi `LYWSD03MMC` BLE thermometer; no additional wiring is required.
+
+The pin assignment and flash settings match this hardware. Adjust [firmware/platformio.ini](firmware/platformio.ini) for a different board, flash size, display driver, or resolution.
+
+### Software
+
+- macOS, Git, Node.js, npm, Python 3.12, and [uv](https://docs.astral.sh/uv/).
+- Node.js 20 or later for the bridge; `.nvmrc` pins **22.22.1** for the project, including the viewer tooling.
+- Codex CLI installed and signed in with ChatGPT.
+- A 2.4 GHz Wi-Fi network that allows the Mac and ESP32 to reach each other.
+
+## 2. Wire the display with power disconnected
+
+Disconnect USB before wiring. Check every connection before powering the board.
+
+![ESP32-S3 NANO to ST7789 wiring](output/wiring/esp32-st7789-wiring-final.png)
+
+| ST7789 TFT | ESP32-S3 NANO | Function |
+| --- | --- | --- |
+| `BLK` | `GPIO7` | Backlight |
+| `CS` | `GPIO10` | SPI chip select |
+| `DC` | `GPIO9` | Data/command; printed as `09` on the board |
+| `RES` | `GPIO8` | Display reset; printed as `08` |
+| `SDA` | `GPIO11` | SPI MOSI, not I²C SDA |
+| `SCL` | `GPIO12` | SPI clock |
+| `VCC` | `3V3` | 3.3 V supply |
+| `GND` | `GND` | Ground |
+
+Connect `VCC` to `3V3`. Verify the actual silkscreen rather than assuming the pin order from viewing direction. Insert connectors fully and check for loose contacts. Wire colors do not determine their function.
+
+## 3. Get the project
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/datehoer/ai_desktop_widget.git ai_desktop_usage_widget
 cd ai_desktop_usage_widget
 ```
 
-如果拿到的是压缩包，解压后在终端进入包含 `README.md`、`package.json` 和 `firmware` 的目录。
-
-项目主要结构：
+For a ZIP download, extract it and enter the directory containing `README.md`, `package.json`, and `firmware/`.
 
 ```text
 ai_desktop_usage_widget/
+├── README.md                    # English guide
+├── README.zh-CN.md              # Simplified Chinese guide
 ├── bridge/
-│   ├── src/                    # Mac 数据桥
-│   └── test/                   # Node.js 测试
+│   ├── src/                     # Mac bridge and rollout tracking
+│   └── test/                    # Node.js tests
 ├── firmware/
 │   ├── include/
-│   │   └── secrets.example.h  # 旧固件配置的可选迁移模板
+│   │   ├── flip_clock.h         # Portable animation geometry and time transitions
+│   │   └── secrets.example.h    # Optional legacy configuration migration
 │   ├── src/
-│   │   ├── main.cpp            # ESP32 界面与 Codex 数据请求
-│   │   ├── device_config.cpp   # NVS 配置持久化
-│   │   └── config_portal.cpp   # 内置配网页面
-│   └── platformio.ini          # 开发板、引脚和依赖配置
-├── viewer/                      # STL/3MF/G-code 本地 3D 预览器
-│   └── src/                     # 预览界面、物理和示例路径
-├── output/wiring/              # 接线图
+│   │   ├── main.cpp             # TFT UI and background status worker
+│   │   ├── ble_thermometer.cpp  # BLE sensor reader
+│   │   ├── device_config.cpp    # NVS persistence and time zones
+│   │   └── config_portal.cpp    # Hotspot and LAN configuration pages
+│   ├── test/                   # Native flip-clock tests
+│   └── platformio.ini
+├── viewer/                     # Local model / G-code viewer and mesh diagnostics
+├── output/
+│   ├── clock/                  # Firmware-rendered animation preview
+│   ├── enclosure/              # OpenSCAD, STL, and product renders
+│   └── wiring/                 # Wiring illustration
+├── scripts/                    # macOS background service helpers
 ├── package.json
 ├── pyproject.toml
 └── uv.lock
 ```
 
-## 四、安装和验证 Codex CLI
+## 4. Check Codex CLI
 
-先确认命令存在：
-
-```bash
-codex --version
-```
-
-如果尚未安装，可按照官方说明安装。在 macOS/Linux 上，官方提供的安装命令是：
+If needed, install with the macOS/Linux command from the [official Codex CLI guide](https://learn.chatgpt.com/docs/codex/cli):
 
 ```bash
 curl -fsSL https://chatgpt.com/codex/install.sh | sh
 ```
 
-首次运行：
+Then verify and sign in:
 
 ```bash
+codex --version
 codex
 ```
 
-按提示选择使用 ChatGPT 登录。完成后退出交互界面，再验证 App Server 能启动：
+Sign in with ChatGPT if needed, exit the interactive session, and check that App Server starts:
 
 ```bash
 codex app-server
 ```
 
-看到进程保持运行、没有立即报错即可按 `Ctrl+C` 退出。桥接服务稍后会自动启动它，不需要长期手动运行两份。
+If the process stays running without an immediate error, stop it with `Ctrl+C`. The bridge starts its own instance, so a second manually started instance is unnecessary.
 
-## 五、准备 Node.js
+## 5. Prepare Node.js
 
-如果使用 nvm：
+With nvm installed:
 
 ```bash
 nvm install
 nvm use
 node --version
 npm --version
-```
-
-`.nvmrc` 当前固定为 Node.js `22.22.1`。只要 Node.js 版本不低于 20，桥接服务原则上也可运行。
-
-项目的 Node.js 部分只使用内置模块，没有第三方 npm 运行依赖。先执行测试：
-
-```bash
 npm test
 ```
 
-预期所有测试通过。
+The bridge uses only Node.js built-in modules and has no third-party npm runtime dependencies. The separate viewer has its own dependencies.
 
-## 六、启动 Mac 数据桥
-
-在项目根目录运行：
+## 6. Start the Mac bridge
 
 ```bash
 npm start
 ```
 
-终端应输出类似：
+Example output:
 
 ```text
 Codex Usage Bridge listening on http://0.0.0.0:8787
 ESP32 URL: http://192.168.1.100:8787/api/status
 ```
 
-这里必须使用输出中的局域网 IPv4 地址，实际地址因路由器而异。不要把 `localhost` 或 `127.0.0.1` 填给 ESP32，因为它们在 ESP32 上代表开发板自己。
+Use the printed **LAN IPv4 URL** in the device configuration. `localhost` and `127.0.0.1` refer to the ESP32 itself when entered on the device.
 
-保持桥接终端运行，并在另一个终端验证：
+Leave the bridge running and check it from another terminal:
 
 ```bash
 curl http://127.0.0.1:8787/healthz
 curl http://127.0.0.1:8787/api/status
 ```
 
-健康检查应返回 JSON；状态接口在首次刷新后应返回包含以下字段的数据：
+A successful status includes fields such as these; values are illustrative:
 
 ```json
 {
@@ -217,38 +224,34 @@ curl http://127.0.0.1:8787/api/status
   "resetCredits": 0,
   "runningCount": 1,
   "running": [
-    {
-      "title": "开发 Codex Usage 桌面面板"
-    }
+    { "title": "Build the desktop widget" }
   ]
 }
 ```
 
-数值只是示例，以实际账户返回为准。
+### Bridge environment variables
 
-### 桥接服务环境变量
-
-| 变量 | 默认值 | 用途 |
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `PORT` | `8787` | HTTP 监听端口 |
-| `HOST` | `0.0.0.0` | HTTP 监听地址 |
-| `REFRESH_MS` | `5000` | 后台刷新间隔，毫秒 |
-| `RUNNING_STALE_MS` | `1800000` | rollout 无更新超过此时长后不再计为运行中；设为 `0` 可禁用过期判断 |
-| `CODEX_BIN` | `codex` | 自定义 Codex CLI 绝对路径 |
-| `DEBUG_CODEX_BRIDGE` | 未启用 | 设为 `1` 后显示 App Server 日志 |
+| `PORT` | `8787` | HTTP port |
+| `HOST` | `0.0.0.0` | HTTP bind address |
+| `REFRESH_MS` | `5000` | Background refresh interval in milliseconds |
+| `RUNNING_STALE_MS` | `1800000` | Expire active rollouts after this period without file updates; `0` disables expiry |
+| `CODEX_BIN` | `codex` | Custom Codex CLI path |
+| `DEBUG_CODEX_BRIDGE` | Unset | Set to `1` to show App Server logs |
 
-## 七、准备 Python 与 PlatformIO
+## 7. Prepare Python and PlatformIO
 
-项目使用 uv 管理 Python 3.12 和固定版本的 PlatformIO：
+uv manages Python 3.12 and the pinned PlatformIO **6.1.19** environment:
 
 ```bash
 uv sync
 uv run platformio --version
 ```
 
-不需要另外创建 Conda 环境；uv 会在项目中创建 `.venv`。
+This creates `.venv`; a separate Conda environment is unnecessary.
 
-如果首次下载依赖需要本地代理，可以只在当前终端设置：
+If dependency downloads require a local proxy, configure it in the current terminal, using your own address:
 
 ```bash
 export https_proxy=http://127.0.0.1:7890
@@ -259,18 +262,18 @@ uv sync
 uv run platformio run -d firmware
 ```
 
-代理地址要改成自己实际运行的代理。依赖下载完成后，局域网访问通常不应经过代理；如遇到 ESP32 接口访问异常，可在新终端重新启动桥接服务。
+After downloading, use a clean terminal or appropriate proxy bypass settings for LAN traffic.
 
-## 八、准备首次配网信息
+## 8. Prepare first-time configuration
 
-Wi-Fi 不再编译进固件。首次烧录后，ESP32 会自动进入内置配网模式。先准备：
+Wi-Fi credentials are configured in a browser and stored in NVS. A new device does not need `secrets.h`. Prepare:
 
-- 2.4 GHz Wi-Fi 名称和密码
-- `npm start` 打印的 Mac 局域网 URL，例如 `http://192.168.1.100:8787/api/status`
-- 所在时区；中国选择“中国标准时间 · 上海（UTC+8）”
-- 刷新间隔，允许 2–60 秒，默认 5 秒
+- Your 2.4 GHz Wi-Fi SSID and password.
+- The Mac bridge LAN URL, such as `http://192.168.1.100:8787/api/status`.
+- A time zone; choose the Shanghai / UTC+8 option for China.
+- A polling interval from 2 to 60 seconds; the default is 5 seconds.
 
-配网模式下屏幕会显示：
+The setup screen shows:
 
 ```text
 SETUP MODE
@@ -279,51 +282,45 @@ Password: codexsetup
 192.168.4.1
 ```
 
-首次使用时设备还不知道家中 Wi-Fi 的名称和密码，因此需要临时连接这个热点。系统一般会自动弹出页面；如果没有，手动打开 `http://192.168.4.1/`。填写并保存后设备自动重启，配置保存在 NVS。这个步骤只用于首次配置或原 Wi-Fi 已经无法连接的恢复场景。
+Connect a phone or computer to this temporary hotspot. Open the captive portal, or visit `http://192.168.4.1/` manually. Save the configuration to reboot the device.
 
-已使用旧版 `secrets.h` 的设备会在升级后自动连接一次，并把旧配置迁移进 NVS。全新安装不需要创建 `secrets.h`。
+The setup page currently uses Chinese labels. Existing devices with legacy `secrets.h` settings can connect once and migrate those settings into NVS automatically.
 
-## 九、连接 ESP32 并确认串口
+## 9. Identify the connected ESP32
 
-确认接线无误后，用支持数据的 Type-C 线连接电脑。板上亮红灯或绿灯通常只代表供电状态，不代表固件已经正确运行。
-
-列出串口：
+Use a data-capable USB-C cable, then list ports:
 
 ```bash
 uv run platformio device list
 ```
 
-macOS 上常见名称：
+A macOS port may look like `/dev/cu.usbmodem11201`; substitute your actual port in all later commands. A power LED alone does not confirm that the firmware is running.
 
-```text
-/dev/cu.usbmodem11201
-```
+When multiple ESP32 boards are attached, match the USB serial number and startup log. This project prints **`[boot] Codex Usage Widget`**. Do not select a board solely by port numbering or the shared `USB JTAG/serial debug unit` description.
 
-每台电脑和每次插拔后的编号都可能不同，后续命令用自己看到的端口替换示例值。
-
-## 十、编译固件
+## 10. Build and test the firmware
 
 ```bash
 uv run platformio run -d firmware
 ```
 
-首次构建会下载：
+The first build downloads TFT_eSPI, ArduinoJson, and U8g2_for_TFT_eSPI, including the compiled WenQuanYi Chinese font.
 
-- TFT_eSPI
-- ArduinoJson
-- U8g2_for_TFT_eSPI
-- 文泉驿 GB2312 中文字体数据
+The current build uses approximately **21.7% static RAM** and **26.7% flash**. Flip buffers allocate another **150 KiB at runtime**, preferably in PSRAM. If buffer allocation fails, the clock falls back to static updates and reports it in the serial log.
 
-当前验证构建大约使用：
+Run the portable animation tests on the Mac with a C++ compiler installed:
 
-- RAM：14.3%
-- Flash：17.1%
+```bash
+c++ -std=c++11 -Wall -Wextra -Werror -Ifirmware/include \
+  firmware/test/flip_clock_test.cpp -o /tmp/flip-clock-test
+/tmp/flip-clock-test
+```
 
-中文字体已经编译进固件，不需要在 ESP32 上单独安装字体文件。
+These check page geometry, every daily second rollover, midnight, time jumps, and RGB565 shading.
 
-## 十一、烧录固件
+## 11. Upload the firmware
 
-推荐明确指定串口：
+Specify the verified target port:
 
 ```bash
 uv run platformio run -d firmware \
@@ -331,7 +328,7 @@ uv run platformio run -d firmware \
   --upload-port /dev/cu.usbmodem11201
 ```
 
-正常情况下不需要按 `RST` 或 `BOOT`。看到以下信息代表烧录完成：
+A successful upload ends with messages such as:
 
 ```text
 Hash of data verified.
@@ -339,14 +336,9 @@ Hard resetting via RTS pin...
 [SUCCESS]
 ```
 
-如果一直停在 `Connecting...`：
+If it remains at `Connecting...`, hold **BOOT**, briefly press **RST**, release **BOOT**, and retry.
 
-1. 按住 `BOOT`。
-2. 短按一次 `RST`。
-3. 松开 `BOOT`。
-4. 重新执行 upload 命令。
-
-项目还保留了 USB-JTAG 恢复环境。普通方式无法烧录时可以尝试：
+The project also includes a USB-JTAG recovery environment:
 
 ```bash
 uv run platformio run -d firmware \
@@ -354,9 +346,7 @@ uv run platformio run -d firmware \
   --target upload
 ```
 
-## 十二、查看串口日志
-
-烧录后执行：
+## 12. Read the serial log
 
 ```bash
 uv run platformio device monitor \
@@ -364,286 +354,180 @@ uv run platformio device monitor \
   --baud 115200
 ```
 
-正常日志类似：
+Typical output:
 
 ```text
 [boot] Codex Usage Widget
 [boot] initialising TFT on SPI3/HSPI
 [boot] TFT ready
+[clock] HH:MM:SS flip buffers ready, duration 650ms
 [config] loaded from NVS
 [wifi] configured SSID found: your-wifi (-42 dBm)
 [wifi] connected: 192.168.1.155
 [config] bridge: http://192.168.1.100:8787/api/status
 [config] hold BOOT for 4s to reconfigure
-[task] title: 开发 Codex Usage 桌面面板
+[display] live status
+[task] title: Build the desktop widget
+[ble] thermometer reader started
 ```
 
-按 `Ctrl+C` 退出串口监控。退出监控不会停止 ESP32。
+Press `Ctrl+C` to leave the monitor. This does not stop the ESP32.
 
-## 十三、检查屏幕
+## 13. Read the dashboard and room sensor
 
-首次启动流程通常是：
+The initial sequence is: backlight on, setup if required, Wi-Fi connection, clock synchronization, then the task dashboard or idle clock according to the bridge status.
 
-1. 屏幕背光亮起。
-2. 没有有效配置时显示 `SETUP MODE` 并创建临时热点。
-3. 在手机/电脑配网页面保存 Wi-Fi 和 Bridge URL。
-4. ESP32 重启并连接 Wi-Fi。
-5. NTP 同步后顶部时间从 `--:--` 变为当前时间。
-6. 获取桥接数据后，有运行中的任务时显示额度与任务，没有任务时显示翻页钟。
-
-界面含义：
-
-| 区域 | 内容 |
+| Area | Contents |
 | --- | --- |
-| 顶部 | `CODEX`、桥接状态点、当前时间 |
-| `WEEKLY` | 周额度已使用百分比和进度条 |
-| `RESET` | 距离周额度重置的剩余时间 |
-| `CREDITS` | 可用 reset credits；接口未提供时显示 `--` |
-| `RUNNING` | 当前未完成的 Codex 任务数量 |
-| 任务列表 | 最多两个真实任务标题，过长时显示 `...` |
-| 底部 | Wi-Fi RSSI、BLE 温湿度和 `LIVE` / `STALE` |
-| 空闲翻页钟 | `runningCount` 为 `0` 时显示当前小时和分钟；分钟变化时播放翻页效果 |
+| Header | `CODEX`, bridge status dot, current time |
+| `WEEKLY` | Used weekly quota and progress bar |
+| `RESET` | Time until the weekly quota resets |
+| `CREDITS` | Available reset credits, or `--` if unavailable |
+| `RUNNING` | Number of unfinished tasks detected by the bridge |
+| Task list | Up to two real titles, truncated with `...` when necessary |
+| Footer | Wi-Fi RSSI, BLE temperature/humidity, and `LIVE / STALE` |
+| Idle clock | `HOUR / MIN / SEC` cards, room readings, and connection status |
 
-`LIVE` 表示最近一次桥接数据有效。`STALE` 表示当前请求失败，但屏幕仍保留上一次成功数据。只有设备启动后从未成功取得数据时才显示 `NO DATA`。
+The BLE reader scans roughly once per minute for the strongest nearby device named `LYWSD03MMC`, connects briefly to read temperature, humidity, and battery information, then disconnects. The screen displays temperature and humidity. Brief connections reduce the time the reader occupies the sensor connection used by an existing Xiaomi gateway.
 
-固件每分钟扫描一次附近信号最强的 `LYWSD03MMC`，短暂连接并读取温度、湿度和电池后立即断开，避免长期占用连接影响原有米家蓝牙网关。首次读取前底栏显示 `BLE...`；未找到设备时显示 `BLE --`，连接或读取失败时显示 `BLE ERR`。超过三分钟没有新读数时会保留最后一次数据并改为黄色。
+Before the first dashboard reading, the footer can show `BLE...`; an absent sensor shows `BLE --`, and a connection/read failure shows `BLE ERR`. Readings older than three minutes remain visible but turn amber on the dashboard. The idle clock uses `ROOM ...` or `ROOM --` before a reading is available.
 
-## 十四、日常启动顺序
+## 14. Daily use and configuration
 
-完成首次烧录后，ESP32 会记住固件和 Wi-Fi 配置。日常使用只需要：
+Power the ESP32, keep the Mac and device on the same LAN, and start the bridge:
 
-1. 给 ESP32 供电。
-2. 确保 Mac 和 ESP32 在同一局域网。
-3. 在项目目录运行：
-
-   ```bash
-   nvm use
-   npm start
-   ```
-
-4. 保持这个终端和 Mac 处于运行状态。
-
-ESP32 正常联网后会一直在局域网开放配置页。连接同一 Wi-Fi 的电脑或手机可以直接访问：
-
-```text
-http://codex-widget.local/
+```bash
+nvm use
+npm start
 ```
 
-如果当前网络不支持 mDNS，也可以使用串口启动日志中 `[config] LAN page:` 后显示的设备 IP，例如 `http://192.168.1.155/`。从局域网页面保存后设备会自动重启。
+Keep the Mac awake and the bridge running, or install the background service described below.
 
-ESP32 不需要每天重新烧录。正常联网时直接使用上述局域网页面修改 Wi-Fi、密码、Mac 地址、时区或刷新间隔。只有当前 Wi-Fi 已失效、局域网页面无法访问时，才长按 `BOOT` 4 秒进入临时热点恢复模式。修改接线引脚、界面或固件代码时才需要重新烧录。
+When the ESP32 is connected, change Wi-Fi, bridge URL, time zone, or polling interval at [codex-widget.local](http://codex-widget.local/). If mDNS is unavailable, use the IP printed after `[config] LAN page:` in the serial log. Saving settings reboots the device.
 
-如果 Mac 的局域网 IP 因 DHCP 发生变化，可直接打开设备的局域网页面更新 Bridge URL。更稳定的做法仍是在路由器中为 Mac 设置 DHCP 地址保留。
+If the original Wi-Fi is unreachable, hold **BOOT for 4 seconds** to enter the temporary setup hotspot. Reflashing is needed for firmware or pin changes, not routine network configuration.
 
-### macOS 后台自启动（推荐）
+If the Mac's DHCP address changes, update the bridge URL in this page. A DHCP reservation for the Mac avoids repeated address changes. The device's `.local` configuration address does not automatically discover the bridge.
 
-项目提供一个用户级 `launchd` 服务。它会在登录后自动启动 Bridge，进程异常退出时自动重启，不需要一直保留终端窗口。默认把 `http://127.0.0.1:7890` 同时配置为 HTTP、HTTPS 和 ALL proxy，并让 localhost、局域网与 `.local` 地址绕过代理。
+### macOS background service
 
-安装脚本会把一个很小的启动器复制到 Mac 系统盘。登录后它会等待项目所在磁盘和本地代理就绪，再启动 Bridge。这一点对放在 `/Volumes/...` 外置磁盘中的项目尤其重要，可以避免 launchd 早于磁盘挂载而卡在入口脚本之前。
+The user-level `launchd` service starts at login and restarts the bridge after a crash. Its small launcher lives on the system disk and waits for the project volume and configured proxy before starting, including projects located under `/Volumes/...`.
 
-安装并启动：
+The installer defaults HTTP, HTTPS, and ALL proxy settings to `http://127.0.0.1:7890`, with bypasses for localhost, LAN addresses, and `.local` names. Use a running proxy at that address or override it:
 
 ```bash
 nvm use
 npm run service:install
-```
 
-如果代理地址不同，可在安装时覆盖：
-
-```bash
+# If your proxy uses a different port:
 CODEX_WIDGET_PROXY='http://127.0.0.1:7891' npm run service:install
 ```
 
-查看服务与接口状态：
+Check status or remove the service:
 
 ```bash
 npm run service:status
+npm run service:uninstall
 ```
 
-日志位置：
+Logs:
 
 ```text
 ~/Library/Logs/CodexUsageWidget/bridge.log
 ~/Library/Logs/CodexUsageWidget/bridge.error.log
 ```
 
-卸载后台服务：
+Do not also run `npm start` when the service already owns port 8787. Reinstall the service after moving the repository or changing Node/Codex executable paths. The current installer assumes a local proxy; use the manual bridge startup if you do not have one.
 
-```bash
-npm run service:uninstall
-```
+## 15. Troubleshooting
 
-安装后台服务后不要再同时运行 `npm start`，否则两者会争用 8787 端口。该服务使用安装时解析到的 Node 和 Codex 绝对路径；以后切换 Node 版本或移动项目目录后，重新执行一次安装命令即可更新。
+| Symptom | Checks |
+| --- | --- |
+| No backlight | Check `VCC → 3V3`, `GND → GND`, `BLK → GPIO7`, and USB power. |
+| Backlight but no image | Verify CS/DC/RES/SDA/SCL, ST7789 SPI at 240×240, and the repository's PlatformIO configuration. |
+| Reboot / `StoreProhibited` during TFT init | Preserve `-D USE_HSPI_PORT=1`, which selects the required SPI3/HSPI path on this hardware. |
+| No serial port | Try a known data cable and another USB port, list devices again, or enter BOOT/RST download mode. |
+| Wi-Fi fails | Check the exact SSID/password, 2.4 GHz availability, client isolation, guest-network restrictions, and device/MAC limits. Startup connection failure opens setup mode. |
+| Wi-Fi connected, but `NO DATA` | Check `npm run service:status` or the manual bridge, the device's bridge URL, macOS firewall, LAN reachability, and `/api/status`. A newly started bridge may return 503 before its first snapshot. |
+| Repeated `STALE` | Check Mac sleep, Wi-Fi, bridge logs, and firewall. `[bridge] HTTP -11` usually indicates an HTTP timeout. Persistent failure leads to `CLOCK / STALE`. |
+| `IDLE` after a reply finishes | Expected when there are no active tasks. `IDLE / LIVE` indicates a healthy connection; a new active task returns the dashboard after refresh. |
+| Seconds change without flipping | Check for `[clock] HH:MM:SS flip buffers ready, duration 650ms`. An allocation failure uses static updates. Time sync/jumps also intentionally snap. Rebuild and upload if still running the old HH:MM firmware. |
+| Project name instead of real task title | Compare the API's `title` field with `[task] title:` in the serial log. Build and upload current firmware. |
+| Chinese missing or rendered as boxes | Check U8g2_for_TFT_eSPI and `u8g2_font_wqy14_t_gb2312b`, then rebuild. The font covers common GB2312 Simplified Chinese, not all Unicode or emoji. |
+| Time remains placeholders | Check NTP access to `pool.ntp.org` / `time.cloudflare.com` and select the correct time zone in the configuration page. Supported DST zones switch automatically. |
+| `RUNNING` differs from expectations | Allow bridge and device refreshes. Lifecycle events determine activity, with a default 30-minute no-update expiry controlled by `RUNNING_STALE_MS`. |
+| PlatformIO download fails | Use your actual proxy address for dependency downloads, then restore appropriate LAN proxy bypass settings. |
 
-## 十五、常见问题
+The task tracker recognizes `task_started`, `task_complete`, `task_cancelled`, and `turn_aborted` rollout events. An old `task_started` without later file activity eventually expires instead of remaining active forever.
 
-### 1. 屏幕完全不亮
+## 16. Security and limitations
 
-- 检查 `VCC -> 3V3` 和 `GND -> GND`。
-- 检查 `BLK -> GPIO7`。
-- 确认 USB 线能够供电。
-- 用万用表检查时避免让表笔短接相邻引脚。
+- The ESP32 stores Wi-Fi settings in NVS without flash encryption enabled by default. The web configuration page does not echo the stored password.
+- ChatGPT login credentials stay on the Mac. Do not commit real `secrets.h`, account files, or sensitive serial logs.
+- The bridge and LAN configuration page are intended for a trusted LAN. The bridge listens on all interfaces by default without authentication; do not expose port 8787 to the public internet.
+- The Mac must remain powered on with the bridge running for live task data.
+- macOS and the specified ESP32-S3 NANO hardware have been tested; other operating systems require different serial and startup instructions.
+- The bridge inspects the 30 most recently updated unarchived tasks. It counts those detected as active, returns up to four task summaries, and the TFT shows up to two titles.
+- Chinese glyph coverage is limited to the bundled font. Codex App Server or rollout-format changes may require bridge updates.
 
-### 2. 背光亮，但没有画面
+## 17. Development and verification
 
-- 核对 `CS/DC/RES/SDA/SCL` 五根信号线。
-- 确认屏幕驱动是 ST7789、分辨率是 240×240、接口是 SPI。
-- 确认使用本项目的 `firmware/platformio.ini`。
-- 该硬件需要 `USE_HSPI_PORT=1`，否则 TFT 初始化可能在 ESP32-S3 上崩溃。
-
-### 3. TFT 初始化后重启或出现 `StoreProhibited`
-
-本项目已通过以下编译参数固定使用 SPI3/HSPI：
-
-```ini
--D USE_HSPI_PORT=1
-```
-
-不要删除该参数。如果修改了 PlatformIO 环境，确认它仍然生效。
-
-### 4. 找不到串口
-
-- 换一根确定支持数据传输的 USB-C 线。
-- 换电脑 USB 端口，避免仅供电 Hub。
-- 重新运行 `uv run platformio device list`。
-- 尝试 BOOT/RST 下载模式。
-- macOS 上选择 `/dev/cu.*` 端口，而不是盲目复用别人的编号。
-
-### 5. Wi-Fi 一直连接失败
-
-- 启动时连接失败后，设备会自动进入 `SETUP MODE`。
-- 正常运行时长按 `BOOT` 4 秒也可进入配网页面。
-- 核对 SSID 的每一个字符。
-- 使用 2.4 GHz 网络。
-- 检查密码和大小写。
-- 检查路由器是否启用了 AP/client isolation。
-- 检查设备数量限制、MAC 过滤和访客网络限制。
-- 从串口查看是否出现 `configured SSID found`。
-
-正常联网时优先访问 `http://codex-widget.local/` 或设备的局域网 IP。配网热点密码固定为 `codexsetup`，地址是 `http://192.168.4.1/`；该热点仅在首次配置或恢复模式中开放。
-
-### 6. Wi-Fi 已连接，但显示 `NO DATA`
-
-- 如果已安装后台服务，运行 `npm run service:status`；否则确认 Mac 上的 `npm start` 仍在运行。
-- 打开 `http://codex-widget.local/`（或设备 IP）确认 Bridge URL 不是 `localhost` 或 `127.0.0.1`。
-- 在 Mac 上打开 `http://<Mac-IP>:8787/api/status`。
-- 检查 macOS 防火墙是否阻止 Node.js 接收入站连接。
-- 确认 Mac 和 ESP32 不在互相隔离的访客网络。
-- 若接口刚启动返回 503，等待首次 Codex 数据刷新后重试。
-
-### 7. 偶尔显示 `STALE`
-
-短暂网络抖动或 Codex App Server 查询变慢时会显示 `STALE`。屏幕会保留最近一次数据并自动重试。桥接接口使用缓存优先，不会让 ESP32 等待慢查询。
-
-如果频繁出现，可查看串口：
-
-```text
-[bridge] HTTP -11
-```
-
-这通常表示 HTTP 超时。检查 Mac 是否休眠、Wi-Fi 信号、桥接进程和防火墙。
-
-### 8. 显示项目名而不是真实任务名
-
-确认使用最新版固件。最新版直接读取 JSON 的 `title` 字段，不再用项目名回退。串口应输出：
-
-```text
-[task] title: 真实任务标题
-```
-
-如果接口中的 `title` 正确而串口不正确，重新构建并烧录固件，不要只重启旧固件。
-
-### 9. 中文不显示、乱码或方框
-
-- 确认 PlatformIO 依赖中包含 `U8g2_for_TFT_eSPI`。
-- 确认固件使用 `u8g2_font_wqy14_t_gb2312b`。
-- 重新执行完整构建和烧录。
-- 当前字库覆盖常用 GB2312 简体中文；emoji、繁体和生僻 Unicode 字符可能缺字。
-
-### 10. 时间一直是 `--:--`
-
-时间来自 NTP。检查 Wi-Fi 是否能访问互联网，以及网络是否屏蔽 `pool.ntp.org` 或 `time.cloudflare.com`。时区可在配置页直接选择；中国选择“中国标准时间 · 上海（UTC+8）”。采用夏令时的选项会自动切换。
-
-### 11. `RUNNING` 数量和肉眼观察不一致
-
-桥接服务根据本地 rollout 文件最后一个 `task_started`、`task_complete`、`task_cancelled` 或 `turn_aborted` 事件判断。为避免异常退出留下永久运行状态，仍为 `task_started` 但连续 30 分钟没有文件更新的任务会自动过期；可通过 `RUNNING_STALE_MS` 调整。短时不一致时先等待一个刷新周期，再重启桥接服务确认。
-
-### 12. PlatformIO 下载失败
-
-按“准备 Python 与 PlatformIO”一节临时设置代理。若代理端口不是 `7890`，使用自己的端口。依赖已经下载后，可取消代理再编译。
-
-## 十六、安全说明
-
-- Wi-Fi 密码保存在 ESP32 的 NVS；默认没有启用 Flash Encryption，因此能物理读取设备 Flash 的人理论上可以取得密码。
-- 配置页面不会回显已保存的 Wi-Fi 密码。
-- 旧设备可通过被 Git 忽略的 `firmware/include/secrets.h` 完成一次迁移；不要提交真实 `secrets.h`。
-- 不要把串口日志中的敏感内容或 ChatGPT 登录文件提交到公开仓库。
-- ESP32 不保存 ChatGPT 登录令牌；登录状态只存在于运行 Codex 的 Mac。
-- 桥接服务监听局域网所有网卡且没有登录验证，只应在可信家庭网络中使用。
-- 不要把 8787 端口映射到公网。
-
-## 十七、开发与验证
-
-修改桥接代码后：
+For bridge changes:
 
 ```bash
 npm test
 ```
 
-修改固件后：
+For firmware changes:
 
 ```bash
+c++ -std=c++11 -Wall -Wextra -Werror -Ifirmware/include \
+  firmware/test/flip_clock_test.cpp -o /tmp/flip-clock-test
+/tmp/flip-clock-test
 uv run platformio run -d firmware
-uv run platformio run -d firmware \
-  --target upload \
-  --upload-port /dev/cu.usbmodem11201
 ```
 
-修改桥接代码后，后台服务用户可重新运行 `npm run service:install` 以重启并更新配置；手动运行用户需重启 `npm start`。修改固件代码后必须重新烧录。
+Then upload to the verified device port using the command in section 11. Restart a manual bridge after code changes, or reinstall the background service to update its configuration and restart it.
 
-## 当前限制
+The HH:MM:SS update was compiled, passed the native flip tests and six bridge tests, and was uploaded to the identified project device. Startup confirmed the flip buffers were ready and live task data resumed. The GIF is a host-generated drawing preview; final motion on the physical TFT remains subject to its refresh characteristics.
 
-- 已针对 macOS 和一块具体的 ESP32-S3 NANO 验证；Windows/Linux 的串口名和自启动方式不同。
-- Mac 必须开机并运行桥接服务。
-- Mac IP 改变后需要通过配网页面更新 Bridge URL；当前版本尚未实现 mDNS 自动发现。
-- 屏幕只显示前两个运行任务，但 `RUNNING` 数字表示全部运行任务数量。
-- 中文字体覆盖 GB2312 常用简体字，不覆盖所有 Unicode。
-- Codex App Server 或本地 rollout 格式如果将来改变，桥接解析可能需要同步更新。
+## 18. Enclosure and local 3D viewer
 
-## 十八、3D 打印文件预览器
+The enclosure combines a black front frame, a smoke-translucent PETG rear shell, and a black stand tilted back 15°. Dimensions, printing guidance, assembly notes, and OpenSCAD export commands are in the [enclosure guide (Chinese)](output/enclosure/README.md).
 
-`viewer/` 是独立的浏览器端预览器，文件只在本机解析，不会上传。当前支持：
+Current versioned files:
 
-- STL、3MF、OBJ、AMF、PLY、STEP/STP 模型导入
-- 多个独立零件连续添加、自动平铺和零件列表选择
-- 在 3D 画布直接点击选择零件，并用三轴操纵器移动、旋转和缩放
-- 世界/局部坐标切换，1 mm、15°、0.1 倍变换吸附，以及 W / E / R / Q 快捷键
-- XYZ 精确数值编辑，零件居中、贴合热床、复制、复位、删除和清空装配
-- G-code 打印路径和逐层查看
-- 尺寸、三角面数和网格数量统计
-- 哑光塑料、半透明 PETG 和金属外观
-- Rapier 重力、摩擦、打印床及其他装配零件碰撞演示
-- 仓库现有前壳、后壳、支架及 G-code 内置示例
+| Part | File |
+| --- | --- |
+| Wider front frame | [front-black-v5-wide.stl](output/enclosure/front-black-v5-wide.stl) |
+| Rear shell with manifold rail stops | [back-smoke-petg-v7-manifold.stl](output/enclosure/back-smoke-petg-v7-manifold.stl) |
+| Matching wider stand | [stand-black-v5-wide.stl](output/enclosure/stand-black-v5-wide.stl) |
+| Parametric source | [codex_widget_enclosure.scad](output/enclosure/codex_widget_enclosure.scad) |
 
-首次安装依赖：
+The v7 rear shell joins the rail stops to the side rails with a 0.4 mm overlap to remove non-manifold edges. The viewer's internal assembly mode loads the current front/rear shells and electronics proxies. Its present depth calculation reports **0 mm remaining clearance**, so review actual connectors, cable bends, and a fit sample before treating the render as a confirmed hardware fit.
+
+`viewer/` is a separate browser tool. Imported files are parsed locally and are not uploaded. It supports:
+
+- STL, 3MF, OBJ, AMF, PLY, and STEP/STP model import, plus G-code paths and layer inspection.
+- Multiple parts, automatic arrangement, canvas selection, move/rotate/scale controls, world/local coordinates, snapping, and W/E/R/Q shortcuts.
+- Exact XYZ editing, centering, placing on the bed, duplicate/reset/delete, and assembly clearing.
+- Dimensions, triangle counts, mesh counts, and plastic, translucent PETG, or metal appearances.
+- Rapier gravity, friction, and collisions with the print bed and other parts.
+- Background mesh checks for separate shells, non-manifold edges, holes, inconsistent winding, duplicate triangles, and degenerate triangles.
+- Internal assembly inspection with aligned front/rear shells and TFT/ESP32 proxies, plus a G-code example.
+
+Topology checks help identify mesh defects; they do not replace slicer checks for thin walls, overhangs, or material shrinkage.
 
 ```bash
 npm run viewer:install
-```
-
-启动开发服务器：
-
-```bash
 npm run viewer:dev
 ```
 
-然后打开 `http://localhost:4173/`。生产构建和本地预览分别使用：
+Open [localhost:4173](http://localhost:4173/). Build and preview production output with:
 
 ```bash
 npm run viewer:build
 npm run viewer:preview
 ```
 
-预览器基于 Online3DViewer、GCode Preview、Three.js 和 Rapier。生产构建会把三个内置 STL 示例复制进 `viewer/dist/assets/`，因此构建产物体积会包含这些模型。
-
-完成以上步骤后，任何拥有相同硬件、Codex 登录环境和同一局域网的人，都可以从零复现这块桌面状态屏。
+The viewer uses Online3DViewer, GCode Preview, Three.js, and Rapier. Production output includes the two front/rear STL assets used by the internal assembly inspector.
